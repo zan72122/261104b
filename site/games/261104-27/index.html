@@ -1,0 +1,1267 @@
+<!doctype html>
+<html lang="ja">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1,maximum-scale=1,minimum-scale=1,user-scalable=no,viewport-fit=cover">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+<meta name="theme-color" content="#0a0f3a">
+<meta name="robots" content="noindex,nofollow">
+<title>するる、ふわぁ！ひかりのむすびめと夜の大きな木</title>
+<style>
+html,body{margin:0;padding:0;width:100%;height:100%;overflow:hidden;background:#0a0f3a;overscroll-behavior:none;
+  touch-action:none;-webkit-user-select:none;user-select:none;-webkit-touch-callout:none;-webkit-tap-highlight-color:transparent;-webkit-text-size-adjust:100%}
+canvas{position:fixed;left:0;top:0;display:block;touch-action:none;-webkit-touch-callout:none;-webkit-user-select:none;user-select:none;outline:none}
+#safe{position:fixed;left:0;top:0;width:0;height:0;visibility:hidden;pointer-events:none;
+  padding-top:env(safe-area-inset-top);padding-right:env(safe-area-inset-right);padding-bottom:env(safe-area-inset-bottom);padding-left:env(safe-area-inset-left)}
+</style>
+
+<script src="../../gf-playlog.js" defer></script>
+</head>
+<body>
+<canvas id="c"></canvas>
+<div id="safe"></div>
+<script>
+(()=>{
+'use strict';
+/* =====================================================================
+   するる、ふわぁ！ひかりのむすびめと夜の大きな木   (game 261104-27)
+   fr-261029-3 / particles / no_animal_princess
+   画風: 単色の藍(背景) + 発光2色(金・水色)。すべての形は粒の集合。
+   核: 結び目を引く(向き・長さ) → 芽が並ぶ → 長押しで育つ
+       近い芽 = 光のアーチ / 遠い芽 = 独立したランプと小さな庭
+       ランプ→アーチ→橋 がつながると光が渡り、対岸の街灯が灯る
+       灯った街灯の根元を長押し → 押した場所に次の結び目
+       すべて灯ると庭が大きな光の木へ → 枝先の家・風車・風車まつり → 次の結び目で新しい庭
+   文字・数字のUIなし。
+   ===================================================================== */
+const cv=document.getElementById('c');
+const ctx=cv.getContext('2d');
+const TAU=Math.PI*2, PI=Math.PI;
+const BG='#0a0f3a';
+const clamp=(v,a,b)=>v<a?a:v>b?b:v;
+const lerp=(a,b,t)=>a+(b-a)*t;
+const ease=t=>{t=clamp(t,0,1);return t*t*(3-2*t);};
+const R=Math.random, rnd=(a,b)=>a+R()*(b-a);
+const hyp=Math.hypot;
+const mtof=m=>440*Math.pow(2,(m-69)/12);
+const PENT=[0,2,4,7,9];
+const pent=(b,i)=>b+12*Math.floor(i/5)+PENT[((i%5)+5)%5];
+const qv=(a,c,b,t)=>{const u=1-t;return u*u*a+2*u*t*c+t*t*b;};
+const angLerp=(a,b,t)=>{let d=b-a;while(d>PI)d-=TAU;while(d<-PI)d+=TAU;return a+d*t;};
+
+/* ============================ AUDIO ============================ */
+const AU={c:null,m:null,wet:null,nb:null,shG:null,ok:false,bedT:0};
+function audioInit(){
+  try{
+    if(!AU.c){
+      const AC=window.AudioContext||window.webkitAudioContext; if(!AC) return;
+      const c=new AC(); AU.c=c;
+      const comp=c.createDynamicsCompressor();
+      comp.threshold.value=-16; comp.knee.value=12; comp.ratio.value=4; comp.attack.value=0.004; comp.release.value=0.25;
+      comp.connect(c.destination);
+      const m=c.createGain(); m.gain.value=0.6; m.connect(comp); AU.m=m;
+      const dl=c.createDelay(1.0); dl.delayTime.value=0.27;
+      const fb=c.createGain(); fb.gain.value=0.36;
+      const lp=c.createBiquadFilter(); lp.type='lowpass'; lp.frequency.value=2400;
+      dl.connect(lp); lp.connect(fb); fb.connect(dl);
+      const wo=c.createGain(); wo.gain.value=0.5; lp.connect(wo); wo.connect(m);
+      const wet=c.createGain(); wet.gain.value=1; wet.connect(dl); AU.wet=wet;
+      const len=(c.sampleRate*1.5)|0, b=c.createBuffer(1,len,c.sampleRate), d=b.getChannelData(0);
+      for(let i=0;i<len;i++) d[i]=Math.random()*2-1;
+      AU.nb=b;
+      const ns=c.createBufferSource(); ns.buffer=b; ns.loop=true;
+      const bp=c.createBiquadFilter(); bp.type='bandpass'; bp.frequency.value=6800; bp.Q.value=0.9;
+      const g=c.createGain(); g.gain.value=0.0001;
+      ns.connect(bp); bp.connect(g); g.connect(m); ns.start();
+      AU.shG=g;
+      try{ const ub=c.createBuffer(1,1,c.sampleRate), us=c.createBufferSource(); us.buffer=ub; us.connect(c.destination); us.start(0); }catch(e){}
+    }
+    if(AU.c.state!=='running'){ const p=AU.c.resume(); if(p&&p.catch) p.catch(()=>{}); }
+    AU.ok=true;
+  }catch(err){ AU.ok=false; }
+}
+const BELL_STD=[1,1, 2.0,0.26, 3.01,0.09];
+const BELL_LOW=[1,1, 2.76,0.22, 5.4,0.07, 0.5,0.3];
+const BELL_GLASS=[1,1, 4.07,0.14];
+function bell(f,vol,dur,when,kind){
+  if(!AU.ok||!AU.c||AU.c.state==='closed') return;
+  try{
+    const c=AU.c, t=c.currentTime+(when||0);
+    const P=kind===1?BELL_LOW:kind===2?BELL_GLASS:BELL_STD;
+    const g=c.createGain();
+    g.gain.setValueAtTime(0.0001,t);
+    g.gain.exponentialRampToValueAtTime(vol,t+0.006);
+    g.gain.exponentialRampToValueAtTime(0.0001,t+dur);
+    g.connect(AU.m);
+    const ws=c.createGain(); ws.gain.value=0.32; g.connect(ws); ws.connect(AU.wet);
+    for(let i=0;i<P.length;i+=2){
+      const o=c.createOscillator(); o.type='sine'; o.frequency.setValueAtTime(f*P[i],t);
+      const og=c.createGain(); og.gain.value=P[i+1];
+      o.connect(og); og.connect(g); o.start(t); o.stop(t+dur+0.05);
+    }
+  }catch(e){}
+}
+function glide(f0,f1,vol,dur,when,type){
+  if(!AU.ok||!AU.c||AU.c.state==='closed') return;
+  try{
+    const c=AU.c, t=c.currentTime+(when||0);
+    const o=c.createOscillator(); o.type=type||'sine';
+    o.frequency.setValueAtTime(f0,t); o.frequency.exponentialRampToValueAtTime(f1,t+dur);
+    const g=c.createGain(); g.gain.setValueAtTime(0.0001,t);
+    g.gain.exponentialRampToValueAtTime(vol,t+0.02); g.gain.exponentialRampToValueAtTime(0.0001,t+dur);
+    o.connect(g); g.connect(AU.m); o.start(t); o.stop(t+dur+0.05);
+  }catch(e){}
+}
+function noise(vol,dur,f0,f1,q,when){
+  if(!AU.ok||!AU.c||!AU.nb||AU.c.state==='closed') return;
+  try{
+    const c=AU.c, t=c.currentTime+(when||0);
+    const s=c.createBufferSource(); s.buffer=AU.nb;
+    const bp=c.createBiquadFilter(); bp.type='bandpass'; bp.Q.value=q||1;
+    bp.frequency.setValueAtTime(f0,t); bp.frequency.exponentialRampToValueAtTime(f1,t+dur);
+    const g=c.createGain(); g.gain.setValueAtTime(0.0001,t);
+    g.gain.exponentialRampToValueAtTime(vol,t+Math.min(0.05,dur*0.3)); g.gain.exponentialRampToValueAtTime(0.0001,t+dur);
+    s.connect(bp); bp.connect(g); g.connect(AU.m); s.start(t,R()*0.8); s.stop(t+dur+0.05);
+  }catch(e){}
+}
+const TONE={N:69,T:62,F:76,S:66};
+const S={
+  knot(){ bell(mtof(50),0.34,1.6,0,1); noise(0.07,0.12,900,300,0.8); },
+  stretch(i){ bell(mtof(pent(62,i)),0.1,0.45,0,2); },
+  unravel(n){ glide(220,880,0.12,0.32,0,'triangle'); for(let i=0;i<n;i++) bell(mtof(pent(67,i*2)),0.12,0.9,0.12+i*0.09); noise(0.05,0.3,2000,6000,1.2); },
+  back(){ glide(480,300,0.08,0.18,0,'sine'); },
+  grow(i){ bell(mtof(pent(64,i)),0.07,0.35,0,2); },
+  lamp(type){ const b=TONE[type]||62; bell(mtof(b),0.15,1.4); bell(mtof(b+7),0.09,1.2,0.07); bell(mtof(b+12),0.07,1.2,0.14,2); },
+  flower(){ bell(mtof(81),0.12,0.5,0,2); bell(mtof(86),0.08,0.5,0.06,2); },
+  tickle(){ for(let i=0;i<4;i++) bell(mtof(pent(79,i%2?3:1)),0.05,0.18,i*0.045,2); },
+  arch(){ bell(mtof(69),0.12,1.0); bell(mtof(73),0.12,1.0,0.12); bell(mtof(76),0.1,1.4,0.24); },
+  step(i){ bell(mtof(pent(69,i)),0.09,0.6,0,2); },
+  success(){ [0,2,4,5,7].forEach((k,i)=>bell(mtof(pent(62,k)),0.13,1.6,i*0.07)); bell(mtof(50),0.17,2.2,0,1); noise(0.06,0.8,5000,9000,0.7); },
+  bridge(){ noise(0.09,0.5,400,3000,0.9); glide(300,700,0.09,0.4,0,'sine'); },
+  wob(){ bell(mtof(45),0.035,0.25,0,2); },
+  sleepy(){ glide(200,170,0.05,0.4,0,'sine'); },
+  appear(){ bell(mtof(55),0.2,1.4,0,1); glide(330,660,0.06,0.3,0.05,'sine'); },
+  transform(){ for(let i=0;i<12;i++) bell(mtof(pent(50,i)),0.09,2.0,i*0.22,i%3?0:1); noise(0.08,3,300,8000,0.6); },
+  house(){ bell(mtof(64),0.12,1.6); bell(mtof(68),0.1,1.6,0.05); bell(mtof(71),0.1,1.6,0.1); bell(mtof(76),0.08,2,0.18,2); },
+  road(){ bell(mtof(72),0.1,1.0); bell(mtof(79),0.1,1.2,0.1); bell(mtof(84),0.08,1.4,0.2,2); },
+  wind(type,i,v){ const m=TONE[type]||69; bell(mtof(m+(i===2?12:i===1?7:0)),0.12*(v||1),0.9,0,type==='T'?1:0); },
+  pick(){ bell(mtof(74),0.08,0.3,0,2); },
+  drop(){ bell(mtof(67),0.1,0.5); },
+  fountain(){ for(let i=0;i<8;i++) bell(mtof(pent(74,i)),0.08,1.2,i*0.08,2); noise(0.06,1.5,3000,9000,0.8); }
+};
+function grain(lvl){ if(R()<lvl*0.45) bell(mtof(pent(86,(R()*7)|0)),0.012+0.02*R(),0.22,0,2); }
+
+/* ============================ SCREEN ============================ */
+let W=1,H=1,DPR=1,CX=0,CY=0,VW=1,VH=1;
+const SAFE={t:0,r:0,b:0,l:0};
+const safeEl=document.getElementById('safe');
+function readSafe(){
+  try{ const cs=getComputedStyle(safeEl);
+    SAFE.t=parseFloat(cs.paddingTop)||0; SAFE.r=parseFloat(cs.paddingRight)||0;
+    SAFE.b=parseFloat(cs.paddingBottom)||0; SAFE.l=parseFloat(cs.paddingLeft)||0;
+  }catch(e){}
+}
+let camSnap=true;
+function resize(){
+  W=Math.max(1,window.innerWidth|0); H=Math.max(1,window.innerHeight|0);
+  DPR=Math.min(2,window.devicePixelRatio||1);
+  cv.width=Math.round(W*DPR); cv.height=Math.round(H*DPR);
+  cv.style.width=W+'px'; cv.style.height=H+'px';
+  readSafe();
+  VW=Math.max(1,W-SAFE.l-SAFE.r); VH=Math.max(1,H-SAFE.t-SAFE.b);
+  CX=SAFE.l+VW/2; CY=SAFE.t+VH/2;
+  camSnap=true;
+}
+
+/* ============================ SPRITES ============================ */
+const COL=['255,206,112','128,228,255'];
+const SPR=COL.map(c=>{
+  const s=document.createElement('canvas'); s.width=s.height=48;
+  const g=s.getContext('2d'); const gr=g.createRadialGradient(24,24,0,24,24,24);
+  gr.addColorStop(0,'rgba('+c+',1)'); gr.addColorStop(0.2,'rgba('+c+',0.95)');
+  gr.addColorStop(0.42,'rgba('+c+',0.3)'); gr.addColorStop(1,'rgba('+c+',0)');
+  g.fillStyle=gr; g.fillRect(0,0,48,48); return s;
+});
+
+/* ============================ PARTICLES ============================ */
+const PMAX=3000, FXMAX=520;
+let PN=0;
+function mkP(x,y,c,r,a){ PN++; return {x,y,vx:0,vy:0,tx:x,ty:y,c,r,a,ph:R()*TAU,u:R(),v:R(),w:R(),gx:x,gy:y,dl:0}; }
+function fitPs(ps,n,c,r,a,x,y,sp){
+  while(ps.length>n){ ps.pop(); PN--; }
+  const s=sp||2;
+  while(ps.length<n && PN<PMAX){ ps.push(mkP(x+rnd(-s,s),y+rnd(-s,s),c,r*rnd(0.75,1.25),a)); }
+}
+function dropPs(ps,up){
+  for(let i=0;i<ps.length;i++){ const p=ps[i]; PN--;
+    fx(p.x,p.y,p.vx*0.3+rnd(-25,25),(up?-rnd(20,80):rnd(-30,10))+p.vy*0.3,rnd(0.4,0.9),p.c,p.r,p.a*0.8,up?-10:40); }
+  ps.length=0;
+}
+function freePs(ps){ PN-=ps.length; ps.length=0; }
+function stepPs(ps,dt,K,D){
+  for(let i=0;i<ps.length;i++){ const p=ps[i];
+    p.vx+=((p.tx-p.x)*K-p.vx*D)*dt; p.vy+=((p.ty-p.y)*K-p.vy*D)*dt;
+    p.x+=p.vx*dt; p.y+=p.vy*dt; }
+}
+const FX=[];
+function fx(x,y,vx,vy,life,c,r,a,g,drag){
+  if(FX.length>=FXMAX||PN>=PMAX) return; PN++;
+  FX.push({x,y,vx,vy,life,max:life,c,r,a,g:g||0,dr:drag==null?1.6:drag});
+}
+function updFX(dt){
+  for(let i=FX.length-1;i>=0;i--){ const f=FX[i]; f.life-=dt;
+    if(f.life<=0){ FX[i]=FX[FX.length-1]; FX.pop(); PN--; continue; }
+    f.vy+=f.g*dt; const k=Math.exp(-f.dr*dt); f.vx*=k; f.vy*=k; f.x+=f.vx*dt; f.y+=f.vy*dt; }
+}
+function burst(x,y,n,c,spd,life,r){
+  for(let i=0;i<n;i++){ const a=R()*TAU, s=spd*rnd(0.3,1);
+    fx(x,y,Math.cos(a)*s,Math.sin(a)*s,life*rnd(0.6,1.2),c==null?(R()<0.5?0:1):c,r||2.4,0.9,0,2.2); }
+}
+function ring(x,y,rad,n,c){
+  for(let i=0;i<n;i++){ const a=i/n*TAU; fx(x+Math.cos(a)*rad*0.3,y+Math.sin(a)*rad*0.3,Math.cos(a)*rad*2.2,Math.sin(a)*rad*2.2,0.45,c,2.2,0.8,0,4); }
+}
+
+/* ============================ LIGHT PACKETS ============================ */
+const PK=[];
+function packet(pts,spd,marks,done){
+  const cum=[0]; for(let i=1;i<pts.length;i++) cum.push(cum[i-1]+hyp(pts[i].x-pts[i-1].x,pts[i].y-pts[i-1].y));
+  const p={pts,cum,total:cum[cum.length-1],s:0,spd,marks:(marks||[]).sort((a,b)=>a.d-b.d),mi:0,done,hx:pts[0].x,hy:pts[0].y};
+  PK.push(p); return p;
+}
+function updPackets(dt){
+  for(let i=PK.length-1;i>=0;i--){ const p=PK[i];
+    p.s+=p.spd*dt;
+    while(p.mi<p.marks.length && p.marks[p.mi].d<=p.s){ try{p.marks[p.mi].fn();}catch(e){} p.mi++; }
+    const s=Math.min(p.s,p.total); let k=1; while(k<p.cum.length-1 && p.cum[k]<s) k++;
+    const a=p.pts[k-1], b=p.pts[k], seg=(p.cum[k]-p.cum[k-1])||1, t=clamp((s-p.cum[k-1])/seg,0,1);
+    p.hx=lerp(a.x,b.x,t); p.hy=lerp(a.y,b.y,t);
+    if(p.lite) fx(p.hx,p.hy,rnd(-6,6),rnd(-6,6),0.35,0,2.4,0.85,0,3);
+    else { for(let j=0;j<3;j++) fx(p.hx+rnd(-3,3),p.hy+rnd(-3,3),rnd(-18,18),rnd(-18,18),rnd(0.35,0.7),j?0:1,rnd(2,3.4),0.95,0,3);
+      fx(p.hx,p.hy,0,0,0.05,0,7,1,0,0); }
+    if(p.s>=p.total){ PK.splice(i,1); try{ p.done&&p.done(); }catch(e){} }
+  }
+}
+
+/* ============================ CAMERA & DRAW ============================ */
+const cam={x:0,y:-120,z:1};
+const ZMAX=1.5;
+let lastBox={x0:-400,x1:350,y0:-300,y1:110};
+function camTarget(b){
+  const bw=Math.max(200,b.x1-b.x0), bh=Math.max(200,b.y1-b.y0);
+  let z=Math.min(VW/bw,VH/bh,ZMAX);
+  const sh=bh*z;
+  const bottom=Math.min(VH-4,Math.max(sh+0.05*VH,Math.min(0.9*VH,0.5*VH+sh*0.5+0.3*(VH-sh))));
+  return {x:(b.x0+b.x1)/2,y:b.y1-(bottom-VH/2)/z,z};
+}
+function updCam(dt,freeze){
+  const b=focusBox(); lastBox=b;
+  const t=camTarget(b);
+  if(camSnap){ cam.x=t.x; cam.y=t.y; cam.z=t.z; camSnap=false; return; }
+  if(freeze) return;
+  const k=1-Math.exp(-dt*1.8);
+  cam.x+=(t.x-cam.x)*k; cam.y+=(t.y-cam.y)*k; cam.z+=(t.z-cam.z)*k;
+}
+function s2w(x,y){ return {x:(x-CX)/cam.z+cam.x,y:(y-CY)/cam.z+cam.y}; }
+function w2s(x,y){ return {x:(x-cam.x)*cam.z+CX,y:(y-cam.y)*cam.z+CY}; }
+const DL=[];
+function emit(ps,glow){ if(ps.length) DL.push(ps,glow); }
+function render(){
+  ctx.setTransform(DPR,0,0,DPR,0,0);
+  ctx.globalCompositeOperation='source-over'; ctx.globalAlpha=1;
+  ctx.fillStyle=BG; ctx.fillRect(0,0,W,H);
+  ctx.globalCompositeOperation='lighter';
+  const z=cam.z, cx=cam.x, cy=cam.y, tt=G.t, zr=Math.max(z,0.92);
+  for(let k=0;k<DL.length;k+=2){
+    const ps=DL[k], gl=DL[k+1]; if(gl<=0.004) continue;
+    for(let i=0;i<ps.length;i++){ const p=ps[i];
+      const sx=(p.x-cx)*z+CX, sy=(p.y-cy)*z+CY;
+      let rp=p.r*zr; if(rp<0.8) rp=0.8; else if(rp>8) rp=8;
+      const s=rp*4; if(sx<-s||sy<-s||sx>W+s||sy>H+s) continue;
+      let a=p.a*gl*(0.8+0.2*Math.sin(tt*2.6+p.ph)); if(a<0.012) continue; if(a>1) a=1;
+      ctx.globalAlpha=a; ctx.drawImage(SPR[p.c],sx-s*0.5,sy-s*0.5,s,s);
+    }
+  }
+  for(let i=0;i<FX.length;i++){ const f=FX[i];
+    const sx=(f.x-cx)*z+CX, sy=(f.y-cy)*z+CY;
+    let rp=f.r*zr; if(rp<0.8) rp=0.8; else if(rp>10) rp=10;
+    const s=rp*4; if(sx<-s||sy<-s||sx>W+s||sy>H+s) continue;
+    const a=f.a*Math.min(1,f.life/f.max*1.6); if(a<0.012) continue;
+    ctx.globalAlpha=a>1?1:a; ctx.drawImage(SPR[f.c],sx-s*0.5,sy-s*0.5,s,s);
+  }
+  ctx.globalAlpha=1; ctx.globalCompositeOperation='source-over';
+  DL.length=0;
+}
+
+/* ============================ GARDEN STATE ============================ */
+const MERGE=120, LMAX=420, VMAX=330, GROW_T=0.95, HOLD_T=0.25;
+let UID=1;
+let ACT=null;
+const G={phase:'garden',t:0,cycle:0,stage:0,banks:[],bridges:[],streets:[],knots:[],sprouts:[],lamps:[],arches:[],seeds:[],
+  lastPull:[null,null,null],transformAt:-1,T:null,rt:0,fall:null,tt:0,
+  mem:{firstVert:null,lampSpots:[],houses:[],pulls:0,cycles:0},
+  stars:[],preview:[],log:[],perf:0,perfMax:0,pnMax:0};
+function note(s){ G.log.push([Math.round(G.t*10)/10,s]); if(G.log.length>3000) G.log.shift(); }
+
+function initStars(){
+  for(let i=0;i<230;i++){ const p=mkP(rnd(-800,1600),rnd(-1150,-140),R()<0.35?0:1,rnd(1.2,2.3),rnd(0.12,0.38)); p.gx=p.x; p.gy=p.y; p.a0=p.a; p.r0=p.r; G.stars.push(p); }
+}
+function updStars(dt){
+  const T=G.T, fw=(T&&(G.phase==='tree'||G.phase==='transform'))?T.fw:null, t=G.t, fest=T&&T.fest;
+  for(let i=0;i<G.stars.length;i++){ const p=G.stars[i]; const wi=(i/18)|0;
+    if(fw&&wi<fw.length){ const w=fw[wi], j=i%18;
+      if(j<16){ const bl=j%4, al=((j>>2)+1)/4.2, a=w.ang+bl*TAU/4+al*0.45; p.tx=w.x+Math.cos(a)*w.r*al; p.ty=w.y+Math.sin(a)*w.r*al; }
+      else { p.tx=w.x; p.ty=w.y+(j-15)*w.r*0.45; }
+      p.a=(fest?0.9:0.32)*w.ap; p.r=fest?2.6:2;
+    } else { p.tx=p.gx+Math.sin(t*0.07+p.ph)*14; p.ty=p.gy+Math.cos(t*0.05+p.ph)*8; p.a=p.a0; p.r=p.r0; }
+  }
+  stepPs(G.stars,dt,fw?24:6,fw?6.5:3);
+  emit(G.stars,1);
+}
+
+function groundPos(b,p){
+  const w=b.x1-b.x0, x=b.x0+p.u*w, e=Math.min(x-b.x0,b.x1-x), tp=clamp(e/60,0,1), depth=8+62*Math.sqrt(tp);
+  p.gx=x; p.gy=Math.pow(p.v,2.6)*depth+(1-tp)*5; p.a=0.62-0.44*Math.pow(p.v,0.5); p.r=p.v<0.15?rnd(1.8,2.6):rnd(1.3,2.2);
+}
+function mkStreet(bank,x){
+  const s={kind:'street',id:UID++,bank,x,h:rnd(140,156),lit:false,pending:false,litT:-9,ps:[],roots:[],tk:0,press:null,gl:0.3,inv:0,binv:0};
+  fitPs(s.ps,62,1,2.2,0.6,x,-70,30); return s;
+}
+function mkKnot(role,bank,x,y,dir){
+  const k={kind:'knot',id:UID++,role,bank,x,y,dir,R:role==='bridge'?18:28,ps:[],sq:0,sqv:0,ex:0,exv:0,drag:null,app:0,spin:R()*TAU,inv:0,born:G.t,dead:false,stepI:0};
+  fitPs(k.ps,role==='bridge'?48:role==='reset'?110:130,0,1.9,0.85,x,y-20,10);
+  G.knots.push(k); return k;
+}
+function removeKnot(k){ k.dead=true; const i=G.knots.indexOf(k); if(i>=0) G.knots.splice(i,1); }
+
+function newGarden(reuse){
+  G.phase='garden'; G.stage=0; G.transformAt=-1; G.cycle++; G.T=null;
+  G.banks=[]; G.bridges=[]; G.streets=[]; G.knots=[]; G.sprouts=[]; G.lamps=[]; G.arches=[]; G.seeds=[]; G.lastPull=[null,null,null];
+  const gap1=rnd(122,145), gap2=rnd(122,145);
+  const ax0=-640, ax1=rnd(-20,5), bx0=ax1+gap1, bx1=bx0+rnd(290,320), cx0=bx1+gap2, cx1=cx0+rnd(260,290);
+  const pool=reuse||[]; let pi=0;
+  [[ax0,ax1],[bx0,bx1],[cx0,cx1]].forEach((e,i)=>{
+    const b={i,x0:e[0],x1:e[1],ps:[],wob:null,anchorL:null,anchorR:null,extra:0,used:0};
+    const n=Math.round((b.x1-b.x0)*0.72);
+    for(let j=0;j<n;j++){ let p;
+      if(pi<pool.length) p=pool[pi++]; else { if(PN>=PMAX) break; p=mkP(lerp(b.x0,b.x1,R()),rnd(0,60),1,2,0.5); }
+      p.u=R(); p.v=R(); p.w=R(); p.c=1; groundPos(b,p); b.ps.push(p); }
+    G.banks.push(b);
+  });
+  while(pi<pool.length){ const p=pool[pi++]; PN--; fx(p.x,p.y,rnd(-20,20),rnd(-40,0),rnd(0.3,0.8),p.c,p.r,p.a*0.6,20); }
+  for(let i=0;i<2;i++){ const L=G.banks[i], Rb=G.banks[i+1];
+    const a={kind:'anchor',id:UID++,bank:i,x:L.x1-4,side:1}, b={kind:'anchor',id:UID++,bank:i+1,x:Rb.x0+4,side:-1};
+    const br={kind:'bridge',id:UID++,i,a,b,open:false,ready:false,of:0,ofv:0,ps:[],lit:false,flash:0,knot:null};
+    a.bridge=br; b.bridge=br; L.anchorR=a; Rb.anchorL=b;
+    fitPs(br.ps,64,1,2.1,0.7,a.x,0,6); br.ps.forEach((p,j)=>{p.u=j/63;});
+    const k=mkKnot('bridge',i,a.x+44,-3,rnd(-0.4,-0.1)); k.bridge=br; br.knot=k;
+    G.bridges.push(br);
+  }
+  const A=G.banks[0], B=G.banks[1], C=G.banks[2];
+  G.streets.push(mkStreet(1,B.x0+rnd(85,100)), mkStreet(2,C.x0+rnd(88,102)));
+  const mv=G.mem.firstVert;
+  const opts=mv===true?[0,1]:mv===false?[2]:[0,1,2];
+  const o=opts[(R()*opts.length)|0];
+  const dir=o===0?rnd(-0.28,-0.08):o===1?rnd(-0.8,-0.55):-PI/2+rnd(-0.18,0.18);
+  mkKnot('garden',0,A.x1-rnd(205,235),0,dir);
+  for(const s of G.mem.lampSpots){ const b=G.banks[s.bank]; if(!b) continue;
+    const x=clamp(b.x0+s.rel,b.x0+20,b.x1-20); const sd={x,bank:s.bank,ps:[],taken:false,to:null,tt:0}; fitPs(sd.ps,5,0,1.8,0.3,x,-4,4); G.seeds.push(sd); }
+  for(let i=0;i<3;i++) rebuildArches(i,true);
+  camSnap=!reuse;
+  note('garden '+G.cycle);
+}
+
+/* ============================ BANK ============================ */
+function updBank(b,dt){
+  const t=G.t, wb=b.wob; let wa=0,wx=0,age=0;
+  if(wb){ age=t-wb.t; if(age>1.2) b.wob=null; else { wx=wb.x; wa=1-age/1.2; } }
+  for(const p of b.ps){ let ty=p.gy+Math.sin(t*0.9+p.gx*0.03+p.ph)*0.8;
+    if(wa){ const d=Math.abs(p.gx-wx); if(d<60) ty-=Math.sin(age*18)*wa*(1-d/60)*5*(1-p.v); }
+    p.tx=p.gx; p.ty=ty; }
+  stepPs(b.ps,dt,30,7); emit(b.ps,0.9);
+}
+
+/* ============================ KNOT ============================ */
+function knotCenter(k){ const R0=k.R*(0.4+0.6*ease(k.app)); return {x:k.x,y:k.role==='bridge'?k.y:k.y-R0*0.95,R0}; }
+function updKnot(k,dt){
+  k.app=Math.min(1,k.app+dt*2.2);
+  const pr=k.press&&!k.drag;
+  k.sqv+=(((pr?0.6:0)-k.sq)*90-k.sqv*9)*dt; k.sq+=k.sqv*dt;
+  k.exv+=(((pr?1.3:0)-k.ex)*60-k.exv*7)*dt; k.ex+=k.exv*dt;
+  k.pg=Math.max(pr?1:0,(k.pg||0)-dt*3);
+  k.spin+=dt*0.45;
+  const t=G.t, inv=k.inv;
+  const sqm=Math.pow(Math.max(0,Math.sin(t*2.6+k.id)),8)*(0.6+inv);
+  const c=knotCenter(k), R0=c.R0;
+  const bounce=k.drag?0:inv*Math.abs(Math.sin(t*4.2))*6;
+  const cx=c.x, cy=c.y-bounce;
+  let bl=0,bx=0,by=0;
+  if(k.drag){ const dx=k.drag.x-cx, dy=k.drag.y-cy, L=hyp(dx,dy)||1; bl=Math.min(L,k.role==='garden'?LMAX:320); bx=dx/L; by=dy/L; }
+  const cs=Math.cos(k.dir), sn=Math.sin(k.dir);
+  const sx=1+0.42*k.sq+sqm*0.06, sy=1-0.4*k.sq-sqm*0.04;
+  const shrink=k.drag?1-0.4*Math.min(1,bl/220):1;
+  const tailW=k.drag?0.6:0.24;
+  for(const p of k.ps){
+    if(p.w<tailW){ const s=p.w/tailW;
+      if(k.drag){ const d=s*bl, wav=Math.sin(s*12-t*9+p.ph*0.3)*3.5*(0.3+s); p.tx=cx+bx*d-by*wav; p.ty=cy+by*d+bx*wav; p.c=s>0.9?0:(p.u<0.3?1:0); }
+      else { const el=R0*0.75+s*(k.R*1.15+k.ex*16+sqm*12+inv*6), wg=Math.sin(t*5+s*6+k.id)*4*s; p.tx=cx+cs*el-sn*wg; p.ty=cy+sn*el+cs*wg; p.c=0; }
+      p.a=0.9;
+    } else {
+      const a=p.u*TAU+k.spin, kx=Math.sin(a)+2*Math.sin(2*a), ky=Math.cos(a)-2*Math.cos(2*a);
+      const th=1+(p.v-0.5)*0.45, sc=R0/3*shrink;
+      p.tx=cx+kx*th*sc*sx; p.ty=cy+(ky+0.75)*th*sc*sy+k.sq*R0*0.25;
+      p.a=0.5+0.4*(0.5+0.5*Math.sin(3*a)); p.c=p.v<0.12?1:0;
+    }
+  }
+  stepPs(k.ps,dt,k.drag?150:(pr?160:95),pr?13:11);
+  emit(k.ps,0.9+0.5*inv+0.5*k.pg);
+}
+function planPull(k,dx,dy){
+  const L=hyp(dx,dy), b=G.banks[k.bank];
+  if(-dy>Math.abs(dx)*1.25){ const h=Math.min(L,VMAX); return {vert:true,L,pts:[1,2,3].map(i=>({x:k.x,y:-Math.max(34*i,h*i/3)})),tipX:k.x}; }
+  let hx=clamp(dx,-LMAX,LMAX); if(Math.abs(hx)<45) hx=(hx<0?-1:1)*45;
+  const room=hx>0?(b.x1-14)-k.x:k.x-(b.x0+16); if(Math.abs(hx)>room) hx=Math.sign(hx)*Math.max(24,room);
+  const pts=[1,2,3].map(i=>({x:clamp(k.x+hx*i/3,b.x0+16,b.x1-14),y:0}));
+  return {vert:false,L,pts,tipX:pts[2].x};
+}
+function archPreview(pts,x0,x1){ const sp=Math.abs(x1-x0); for(let j=1;j<6;j++){ const t=j/6; pts.push(lerp(x0,x1,t),-40-Math.sin(t*PI)*(sp*0.2+10)); } }
+function updPreview(dt){
+  const P=G.preview; let k=null;
+  if(ACT&&ACT.o&&ACT.o.kind==='knot'&&ACT.o.drag&&ACT.o.role==='garden'&&G.phase==='garden') k=ACT.o;
+  if(!k){ if(P.length) dropPs(P); return; }
+  const c=knotCenter(k), plan=planPull(k,k.drag.x-c.x,k.drag.y-c.y), pts=[];
+  if(plan.L>=48){
+    const t=G.t, b=G.banks[k.bank];
+    for(const q of plan.pts){ const qy=q.y<0?q.y:-8; for(let j=0;j<4;j++) pts.push(q.x+Math.cos(j*TAU/4+t*3)*6,qy+Math.sin(j*TAU/4+t*3)*6); }
+    if(plan.vert){ const top=plan.pts[2].y; for(let j=0;j<10;j++) pts.push(k.x,top*(j/9)); }
+    else {
+      const xs=plan.pts.map(q=>q.x);
+      for(let i=0;i<2;i++){ const d=Math.abs(xs[i+1]-xs[i]); if(d<MERGE&&d>3) archPreview(pts,xs[i],xs[i+1]); }
+      const lo=Math.min(xs[0],xs[2]), hi=Math.max(xs[0],xs[2]); let left=null,right=null;
+      for(const n of nodesOnBank(k.bank)){ if(n.x<lo-3&&(!left||n.x>left.x)) left=n; if(n.x>hi+3&&(!right||n.x<right.x)) right=n; }
+      if(left&&lo-left.x<MERGE) archPreview(pts,left.x,lo);
+      if(right&&right.x-hi<MERGE) archPreview(pts,hi,right.x);
+      for(let j=1;j<=5;j++){ const f=j/5; const xa=hi+MERGE*f, xb=lo-MERGE*f;
+        if(xa<b.x1) pts.push(xa,3); if(xb>b.x0) pts.push(xb,3); }
+    }
+  }
+  const n=pts.length/2; fitPs(P,n,1,2.2,0.4,k.x,-10,4);
+  for(let i=0;i<P.length;i++){ const p=P[i]; p.tx=pts[i*2]; p.ty=pts[i*2+1]; p.a=i<12?0.75:0.5; p.c=i<12?0:1; }
+  stepPs(P,dt,160,14); emit(P,1);
+}
+function releaseKnot(k,cancel){
+  if(!k.drag) return;
+  const c=knotCenter(k), dx=k.drag.x-c.x, dy=k.drag.y-c.y, L=hyp(dx,dy);
+  k.drag=null; k.stepI=0;
+  if(cancel||L<48){ k.sqv-=7; k.exv+=8; if(!cancel) S.back(); return; }
+  if(k.role==='garden') unravel(k,planPull(k,dx,dy));
+  else if(k.role==='bridge') openBridge(k.bridge,k);
+  else if(k.role==='reset') startReset(k);
+}
+function unravel(k,plan){
+  for(const p of k.ps){ p.vy-=rnd(220,440); p.vx+=rnd(-50,50); }
+  const col=plan.vert?{x:k.x,bank:k.bank,lamp:null}:null;
+  const ss=plan.pts.map((pt,i)=>{ const s={kind:'sprout',id:UID++,bank:k.bank,x:pt.x,y:pt.y,col,g:0,flowerTop:false,app:0,delay:0.15+i*0.12,hold:false,ps:[],fl:[],pulse:0,boost:false,inv:0,tk:0,bob:R()*TAU,ht:0,gi:0};
+    G.sprouts.push(s); return s; });
+  let i=0;
+  for(const p of k.ps){ const s=ss[i%3]; if(s.ps.length<24){ s.ps.push(p); p.w=R(); p.u=R(); p.v=R(); } else { PN--; fx(p.x,p.y,p.vx,p.vy,rnd(0.4,0.8),0,2.2,0.8,200); } i++; }
+  k.ps.length=0; removeKnot(k);
+  G.lastPull[k.bank]=plan; G.banks[k.bank].used++; G.mem.pulls++;
+  if(k.bank===0&&G.banks[0].used===1) G.mem.firstVert=plan.vert;
+  S.unravel(3);
+  note('unravel b'+k.bank+(plan.vert?' vert':' horiz')+' sp='+(plan.vert?Math.round(-plan.pts[0].y):Math.round(Math.abs(plan.pts[1].x-plan.pts[0].x))));
+  for(const s of ss){ for(const sd of G.seeds){ if(!sd.taken&&sd.bank===s.bank&&Math.abs(sd.x-s.x)<46){ sd.taken=true; sd.to=s; sd.tt=G.t; s.boost=true; s.g=Math.max(s.g,0.3); bell(mtof(81),0.06,0.8,0.5,2); break; } } }
+}
+
+/* ============================ SPROUT ============================ */
+function sproutHead(s){ if(s.y<0) return {x:s.x,y:s.y+Math.sin(G.t*1.6+s.bob)*3}; return {x:s.x,y:-(8+s.g*48)}; }
+function flowerShape(ps,off,x,y,r,t){
+  for(let i=0;i<10&&off+i<ps.length;i++){ const p=ps[off+i];
+    if(i<7){ const k=i%5, a=k*TAU/5-PI/2+Math.sin(t*1.5+k)*0.08+(i>=5?0.6:0), rr=r*(i>=5?0.55:1); p.tx=x+Math.cos(a)*rr; p.ty=y+Math.sin(a)*rr; p.c=1; p.a=0.9; }
+    else { p.tx=x+(p.u-0.5)*r*0.5; p.ty=y+(p.v-0.5)*r*0.5; p.c=0; p.a=1; } }
+}
+function updSprout(s,dt){
+  if(s.delay>0) s.delay-=dt; else s.app=Math.min(1,s.app+dt*3);
+  s.pulse=Math.max(0,s.pulse-dt*2.5); s.tk=Math.max(0,s.tk-dt*2);
+  if(s.hold){ s.ht+=dt; s.pulse=Math.max(s.pulse,0.55+0.45*Math.sin(s.ht*14));
+    if(s.ht>HOLD_T){ s.g+=dt/(s.boost?0.5:GROW_T); const gi=(s.g*6)|0;
+      if(gi!==s.gi){ s.gi=gi; S.grow(gi); const h=sproutHead(s); burst(h.x,h.y,4,0,50,0.4,2); }
+      if(s.g>=1){ completeSprout(s); return; } } }
+  const t=G.t, ap=ease(s.app), hd=sproutHead(s);
+  const rb=(5+s.g*5+s.pulse*2.5)*(0.3+0.7*ap)*(1+s.inv*0.25*Math.abs(Math.sin(t*5)));
+  const by=hd.y-s.inv*Math.abs(Math.sin(t*4.2))*5, air=s.y<0, jx=s.tk*Math.sin(t*36)*2;
+  for(const p of s.ps){
+    if(p.w<0.35){
+      if(air){ p.tx=s.x+Math.sin(p.u*9+t*2)*1.2; p.ty=lerp(0,by+rb,p.u); const g=p.u<s.g; p.c=g?0:1; p.a=g?0.7:0.22; }
+      else { p.tx=s.x+(p.v-0.5)*2.5; p.ty=lerp(0,by+rb*0.5,p.u); p.c=1; p.a=0.55; }
+    } else if(p.w<0.85){ const a=p.u*TAU+t*0.6, rr=rb*Math.sqrt(p.v)*(1+0.18*s.pulse*Math.sin(t*20+p.ph));
+      p.tx=s.x+Math.cos(a)*rr*0.85+jx; p.ty=by+Math.sin(a)*rr*1.1-rr*0.2; p.c=0; p.a=0.9;
+    } else { const sd=p.u<0.5?-1:1, lf=(4+s.g*9)*ap, f=p.v, ly=air?by+rb*0.8:by*0.45;
+      p.tx=s.x+sd*(2+f*lf); p.ty=ly-Math.sin(f*PI)*lf*0.35-f*lf*0.25; p.c=1; p.a=0.8; }
+  }
+  if(s.flowerTop) flowerShape(s.fl,0,s.x+jx,by-rb*1.1,7*ap+2,t);
+  stepPs(s.ps,dt,s.hold?160:110,11); stepPs(s.fl,dt,120,10);
+  emit(s.ps,0.85+0.5*s.inv+0.4*s.pulse); emit(s.fl,1);
+}
+function tapSprout(s){
+  const h=sproutHead(s);
+  if(!s.flowerTop){ s.flowerTop=true; fitPs(s.fl,10,1,2,0.9,h.x,h.y,3); S.flower(); burst(h.x,h.y-8,8,1,70,0.5,2); note('flower-first'); }
+  else { s.tk=1; s.pulse=1; S.tickle(); }
+}
+function completeSprout(s){
+  s.g=1; s.hold=false; const i=G.sprouts.indexOf(s); if(i>=0) G.sprouts.splice(i,1);
+  if(ACT&&ACT.o===s) ACT.o=null;
+  const hd=sproutHead(s); let L;
+  if(s.col){ L=s.col.lamp; const hh=-s.y+24;
+    if(!L){ L=mkLamp(s.bank,s.col.x,Math.max(112,hh),'T'); L.hd=Math.max(20,-hd.y*0.4); s.col.lamp=L; }
+    else { L.h=Math.max(L.h,hh); L.hv+=80; }
+  } else { L=mkLamp(s.bank,s.x,rnd(66,80),s.flowerTop?'F':'N'); L.hd=-hd.y; }
+  if(s.flowerTop) L.flowerTop=true;
+  for(const p of s.ps) L.ps.push(p); s.ps.length=0;
+  for(const p of s.fl) L.ps.push(p); s.fl.length=0;
+  S.lamp(L.type); burst(L.x,-L.h,14,0,90,0.7);
+  note('lamp '+L.type+(L.flowerTop?'+flowerTop':'')+' b'+L.bank+' x'+Math.round(L.x));
+  rebuildArches(s.bank); recomputeLight(); checkNextKnot(s.bank);
+}
+
+/* ============================ LAMP ============================ */
+function mkLamp(bank,x,h,type){
+  const L={kind:'lamp',id:UID++,bank,x,h,hd:20,hv:0,type,flowerTop:type==='F',foot:0,tk:0,boost:0,ps:[],fl:[],patch:[],inv:0,indep:true,flash:0,hold:false,ht:0,rip:0};
+  G.lamps.push(L); return L;
+}
+function updLamp(L,dt){
+  L.hv+=((L.h-L.hd)*34-L.hv*5.5)*dt; L.hd+=L.hv*dt;
+  L.tk=Math.max(0,L.tk-dt*1.6); L.flash=Math.max(0,L.flash-dt*1.5);
+  if(L.hold){ L.ht+=dt; if(L.ht>0.3){ L.boost=Math.min(0.45,L.boost+dt*0.5); L.rip-=dt; if(L.rip<=0){ L.rip=0.5; rippleFrom(L); } } }
+  else L.boost=Math.max(0,L.boost-dt*0.04);
+  const t=G.t, hd=Math.max(10,L.hd), tall=L.type==='T';
+  const r=(tall?14:13)*(1+L.boost)*(1+L.inv*0.12*Math.abs(Math.sin(t*4.5)));
+  const n=Math.round((tall?44+hd*0.12:52)*(1+L.boost*0.6));
+  fitPs(L.ps,n,0,2.3,0.85,L.x,-hd*0.5,6);
+  const hy=-hd-L.inv*Math.abs(Math.sin(t*4.2))*5, tk=L.tk;
+  const jx=tk*Math.sin(t*38)*3, sqx=1+tk*0.25*Math.sin(t*26), sqy=1-tk*0.2*Math.sin(t*26);
+  for(const p of L.ps){
+    if(p.w<0.3){ p.tx=L.x+(p.v-0.5)*3+Math.sin(p.u*8+t)*0.6; p.ty=lerp(0,hy+r*0.8,p.u); p.c=1; p.a=0.55; }
+    else if(p.w<0.86){ let ox,oy;
+      if(L.flowerTop){
+        if(p.v<0.68){ const k=(p.u*5)|0, a=k*TAU/5-PI/2+Math.sin(t*1.3)*0.06, pr=r*0.6*Math.sqrt(p.v/0.68), pa=(p.u*5%1)*TAU;
+          ox=Math.cos(a)*r*1.05+Math.cos(pa)*pr; oy=Math.sin(a)*r*1.05+Math.sin(pa)*pr; p.c=1; }
+        else { const a=p.u*TAU, rr=r*0.55*Math.sqrt((p.v-0.68)/0.32); ox=Math.cos(a)*rr; oy=Math.sin(a)*rr; p.c=0; }
+      } else { const a=p.u*TAU+t*0.3, rr=r*Math.sqrt(p.v); ox=Math.cos(a)*rr*(tall?0.78:1); oy=Math.sin(a)*rr*(tall?1.3:1); p.c=0; }
+      p.tx=L.x+ox*sqx+jx+Math.sin(t*30+p.ph)*tk*2; p.ty=hy+oy*sqy; p.a=0.85+tk*0.15*Math.sin(t*40+p.ph);
+    } else { const a=p.u*TAU+t*0.2, rr=r*(1.5+p.v*1.4); p.tx=L.x+Math.cos(a)*rr; p.ty=hy+Math.sin(a)*rr; p.c=0; p.a=0.16+0.12*L.flash+0.1*L.boost; }
+  }
+  fitPs(L.fl,L.foot*10,1,2,0.9,L.x,-4,3);
+  for(let k=0;k<L.foot;k++) flowerShape(L.fl,k*10,L.x+[-18,20,-36][k],-10-Math.abs(Math.sin(t*1.4+k))*2,8.5,t);
+  fitPs(L.patch,L.indep?22:0,1,1.8,0.5,L.x,0,20);
+  for(const p of L.patch){ const sd=p.u<0.5?-1:1, f=(p.u*2)%1, rr=24+f*24, hh=(1-Math.abs(f-0.5)*2)*14*p.v+2; p.tx=L.x+sd*rr+Math.sin(t*1.3+p.ph)*1.2; p.ty=-hh; p.c=p.w<0.25?0:1; p.a=0.7; }
+  stepPs(L.ps,dt,90,10); stepPs(L.fl,dt,120,10); stepPs(L.patch,dt,40,8);
+  emit(L.ps,0.95+0.4*L.inv+0.5*L.flash); emit(L.fl,1); emit(L.patch,1);
+}
+function tapLamp(L){ L.tk=1; S.tickle(); if(L.foot<3){ L.foot++; S.flower(); burst(L.x,-8,8,1,60,0.5,2); note('foot flower'); } }
+function rippleFrom(L){
+  for(const ar of G.arches){ if(ar.a!==L&&ar.b!==L) continue; ar.flash=1; packet(edgePts(ar,L),300,[],null); }
+  L.flash=1; bell(mtof(pent(74,(R()*5)|0)),0.05,0.4,0,2);
+}
+
+/* ============================ ARCH / GRAPH ============================ */
+function archPt(n){ if(n.kind==='lamp') return {x:n.x,y:-Math.max(14,n.hd)*0.62}; if(n.kind==='street') return {x:n.x,y:-n.h*0.3}; return {x:n.x,y:-3}; }
+function nodeHead(n){ if(n.kind==='lamp') return {x:n.x,y:-n.hd}; if(n.kind==='street') return {x:n.x,y:-n.h-4}; return {x:n.x,y:-3}; }
+function archCtrl(pa,pb,low){ const sp=Math.abs(pb.x-pa.x); return {x:(pa.x+pb.x)/2,y:Math.min(pa.y,pb.y)-(low?sp*0.1+6:sp*0.32+18)}; }
+const lowArch=e=>e.a.kind==='anchor'||e.b.kind==='anchor';
+function nodesOnBank(bi){
+  const ns=[]; for(const L of G.lamps) if(L.bank===bi) ns.push(L);
+  const b=G.banks[bi]; if(b){ if(b.anchorL) ns.push(b.anchorL); if(b.anchorR) ns.push(b.anchorR); }
+  for(const s of G.streets) if(s.bank===bi) ns.push(s);
+  ns.sort((a,b)=>a.x-b.x); return ns;
+}
+function mkArch(a,b,key,instant){
+  const ar={kind:'arch',id:UID++,a,b,key,bank:a.bank,f:instant?1:0,ps:[],lit:false,flash:0,done:!!instant};
+  const pa=archPt(a); fitPs(ar.ps,12,0,2.1,0.8,pa.x,pa.y,3); G.arches.push(ar); return ar;
+}
+function rebuildArches(bi,instant){
+  const ns=nodesOnBank(bi), want=new Set();
+  for(let i=0;i+1<ns.length;i++){ const a=ns[i], b=ns[i+1];
+    if(b.x-a.x<MERGE&&!(a.kind==='anchor'&&b.kind==='anchor')){ const key=a.id+'-'+b.id; want.add(key);
+      if(!G.arches.some(ar=>ar.key===key)) mkArch(a,b,key,instant); } }
+  for(let i=G.arches.length-1;i>=0;i--){ const ar=G.arches[i]; if(ar.bank===bi&&!want.has(ar.key)){ dropPs(ar.ps); G.arches.splice(i,1); } }
+  for(const L of G.lamps) if(L.bank===bi) L.indep=!G.arches.some(ar=>ar.a===L||ar.b===L);
+}
+function anchorConn(a,done){ return G.arches.some(ar=>(ar.a===a||ar.b===a)&&(!done||ar.f>=1)); }
+function updArch(ar,dt){
+  const pa=archPt(ar.a), pb=archPt(ar.b), span=Math.abs(pb.x-pa.x), c=archCtrl(pa,pb,lowArch(ar));
+  fitPs(ar.ps,Math.round(clamp(span*0.42,12,56)),0,2.1,0.8,pa.x,pa.y,3);
+  if(ar.f<1){ ar.f=Math.min(1,ar.f+dt*1.5);
+    if(ar.f>=1&&!ar.done){ ar.done=true; S.arch(); burst(c.x,(c.y+pa.y)/2,16,null,90,0.7); note('arch '+ar.a.kind+'-'+ar.b.kind); recomputeLight(); } }
+  ar.flash=Math.max(0,ar.flash-dt*1.4);
+  const t=G.t;
+  for(const p of ar.ps){ let tt=p.u; if(ar.f<1) tt=p.u<0.5?Math.min(p.u,ar.f*0.5):Math.max(p.u,1-ar.f*0.5);
+    p.tx=qv(pa.x,c.x,pb.x,tt); p.ty=qv(pa.y,c.y,pb.y,tt)+(p.v-0.5)*4+Math.sin(t*2+p.u*9)*1.2;
+    p.c=p.w<0.3?1:0; p.a=ar.lit?0.75:0.5; }
+  stepPs(ar.ps,dt,70,9); emit(ar.ps,0.8+ar.flash*0.8);
+}
+function edgePts(e,from){
+  const pts=[];
+  if(e.kind==='arch'){ const pa=archPt(e.a), pb=archPt(e.b), c=archCtrl(pa,pb,lowArch(e));
+    for(let i=0;i<=10;i++){ const t=i/10; pts.push({x:qv(pa.x,c.x,pb.x,t),y:qv(pa.y,c.y,pb.y,t)}); } }
+  else { const A=e.a.x, B=e.b.x; for(let i=0;i<=14;i++){ const t=i/14; pts.push({x:qv(A,(A+B)/2,B,t),y:qv(0,-34,0,t)}); } }
+  if(from===e.b) pts.reverse();
+  return pts;
+}
+function recomputeLight(){
+  if(G.phase!=='garden') return;
+  const adj=new Map(); const add=(a,b,e)=>{ if(!adj.has(a)) adj.set(a,[]); if(!adj.has(b)) adj.set(b,[]); adj.get(a).push([b,e]); adj.get(b).push([a,e]); };
+  for(const ar of G.arches) if(ar.f>=1) add(ar.a,ar.b,ar);
+  for(const br of G.bridges) if(br.ready) add(br.a,br.b,br);
+  const par=new Map(), q=[];
+  for(const L of G.lamps){ par.set(L,null); q.push(L); }
+  for(const s of G.streets) if(s.lit){ par.set(s,null); q.push(s); }
+  for(let i=0;i<q.length;i++){ const e=adj.get(q[i]); if(!e) continue; for(const [m,ed] of e) if(!par.has(m)){ par.set(m,[q[i],ed]); q.push(m); } }
+  for(const ar of G.arches) ar.lit=par.has(ar.a)||par.has(ar.b);
+  for(const br of G.bridges) br.lit=br.ready&&par.has(br.a);
+  for(const s of G.streets){ if(s.lit||s.pending||!par.has(s)) continue;
+    const chain=[s]; let c=s; while(par.get(c)){ const pr=par.get(c)[0]; chain.unshift(pr); c=pr; }
+    const pts=[nodeHead(chain[0])], mk=[];
+    for(let i=1;i<chain.length;i++){ const e=par.get(chain[i])[1]; for(const p of edgePts(e,chain[i-1])) pts.push(p); mk.push({idx:pts.length-1,e,i}); }
+    pts.push(nodeHead(s));
+    s.pending=true;
+    const pk=packet(pts,360,[],()=>lightStreet(s));
+    pk.marks=mk.map(m=>({d:pk.cum[m.idx],fn:()=>{ m.e.flash=1; S.step(m.i); }}));
+    note('light flows to street b'+s.bank);
+  }
+}
+function lightStreet(s){
+  if(G.phase!=='garden') return;
+  s.lit=true; s.pending=false; s.litT=G.t; S.success();
+  burst(s.x,-s.h,40,0,160,1.2,2.8); ring(s.x,-s.h,60,20,1);
+  G.stage=G.streets.filter(x=>x.lit).length;
+  note('street lit b'+s.bank);
+  if(s.bank===2) G.transformAt=G.t+2.8;
+  recomputeLight();
+}
+function checkNextKnot(bi){
+  if(G.phase!=='garden'||bi>=2) return;
+  const b=G.banks[bi]; if(bi===1&&b.used===0) return;
+  if(G.knots.some(k=>k.role==='garden'&&k.bank===bi)) return;
+  if(G.sprouts.some(s=>s.bank===bi)) return;
+  if(G.lamps.filter(L=>L.bank===bi).length>=12) return;
+  const goal=b.anchorR, conn=goal&&anchorConn(goal);
+  if(conn){ if(b.extra>=1) return; b.extra++; }
+  const lp=G.lastPull[bi];
+  let tip=lp?lp.tipX:b.x0+(b.x1-b.x0)*0.4;
+  if(!conn&&goal){ let bd=1e9; for(const L of G.lamps) if(L.bank===bi&&Math.abs(goal.x-L.x)<bd){ bd=Math.abs(goal.x-L.x); tip=L.x; } }
+  let s=conn?(R()<0.5?-1:1):(Math.sign(goal.x-tip)||1);
+  const lo=b.x0+(b.anchorL?70:30), hi=b.x1-(b.anchorR?70:30);
+  let x=clamp(tip+s*36,lo,hi);
+  for(let i=0;i<8;i++){ if(G.lamps.some(L=>L.bank===bi&&Math.abs(L.x-x)<22)||G.streets.some(st=>st.bank===bi&&Math.abs(st.x-x)<30)){ x+=s*24; if(x>hi||x<lo){ s=-s; x=clamp(x,lo,hi); } } else break; }
+  let dir;
+  if(!conn) dir=s>0?rnd(-0.45,-0.15):-PI+rnd(0.15,0.45);
+  else dir=lp&&lp.vert?(s>0?-0.3:-PI+0.3):-PI/2+rnd(-0.25,0.25);
+  const k=mkKnot('garden',bi,x,0,dir); S.appear(); burst(x,-16,12,0,80,0.6);
+  note('next knot b'+bi+' conn='+(conn?1:0));
+}
+
+/* ============================ BRIDGE / STREET ============================ */
+function updBridge(br,dt){
+  const tgt=br.open?1:0; br.ofv+=((tgt-br.of)*38-br.ofv*5.5)*dt; br.of+=br.ofv*dt;
+  if(br.open&&!br.ready&&br.of>0.95){ br.ready=true; note('bridge ready '+br.i); recomputeLight(); }
+  br.flash=Math.max(0,br.flash-dt*1.2);
+  const A=br.a.x, B=br.b.x, t=G.t, o=clamp(br.of,-0.1,1.3), k=br.knot, kc=k&&!k.dead?knotCenter(k):null, cy=-34*Math.max(0,br.of);
+  for(const p of br.ps){ const u=p.u;
+    const opx=qv(A,(A+B)/2,B,u), opy=qv(0,cy,0,u)+Math.sin(t*1.7+u*7)*1.5*o+(p.v-0.5)*4;
+    let cx_,cy_;
+    if(u<0.3){ const s=u/0.3*44; cx_=A+s; cy_=s*0.06+(p.v-0.5)*4; }
+    else if(u>0.8){ const s=(1-u)/0.2*34; cx_=B-s; cy_=s*0.25+(p.v-0.5)*4+Math.sin(t+u*5); }
+    else { const kx=kc?kc.x:A+44, ky=kc?kc.y:0; cx_=kx+(p.v-0.5)*10; cy_=ky+(p.w-0.5)*10; }
+    p.tx=lerp(cx_,opx,o); p.ty=lerp(cy_,opy,o); p.c=p.w<0.25?0:1; p.a=br.lit?0.82:0.55;
+  }
+  stepPs(br.ps,dt,80,9); emit(br.ps,0.85+br.flash);
+}
+function openBridge(br,k){
+  if(br.open) return;
+  br.open=true; br.ofv=1.5; br.knot=null;
+  for(const p of k.ps){ p.u=rnd(0.3,0.8); p.w=R(); p.v=R(); br.ps.push(p); }
+  k.ps.length=0; removeKnot(k);
+  S.bridge(); note('bridge open '+br.i);
+}
+function updStreet(s,dt){
+  s.tk=Math.max(0,s.tk-dt*1.6); s.gl=lerp(s.gl,s.lit?1:0.32,1-Math.exp(-dt*2));
+  const t=G.t, lit=s.lit;
+  fitPs(s.ps,lit?92:62,0,2.3,0.8,s.x,-s.h,8);
+  const hy=-s.h-s.inv*Math.abs(Math.sin(t*4.2))*4-(lit?0:Math.sin(t*1.1)*1.5);
+  const rh=15*(1+s.tk*0.15*Math.sin(t*30)), brt=lit?1:0.3+0.08*Math.sin(t*1.2), jx=s.tk*Math.sin(t*36)*2.5;
+  for(const p of s.ps){
+    if(p.w<0.36){ p.tx=s.x+(p.v-0.5)*4; p.ty=lerp(2,hy+rh,p.u); p.c=1; p.a=0.5; }
+    else if(p.w<0.46){ p.tx=s.x+(p.u-0.5)*rh*1.6+jx; p.ty=hy-rh-2-(1-Math.abs(p.u-0.5)*2)*5; p.c=1; p.a=0.6; }
+    else if(p.w<0.82){ const a=p.u*TAU, ring_=p.v<0.45, rr=ring_?rh*(0.82+0.18*p.v/0.45):rh*0.55*Math.sqrt((p.v-0.45)/0.55);
+      p.tx=s.x+Math.cos(a)*rr*0.85+jx; p.ty=hy+Math.sin(a)*rr; p.c=ring_?1:0; p.a=ring_?0.55:brt; }
+    else { const a=p.u*TAU+t*0.25, rr=lit?rh*(1.6+p.v*1.6):rh*(0.6+p.v*0.3); p.tx=s.x+Math.cos(a)*rr; p.ty=hy+Math.sin(a)*rr; p.c=0; p.a=lit?0.2:0.06; }
+  }
+  const b=G.banks[s.bank];
+  fitPs(s.roots,lit?40:0,0,2,0.5,s.x,0,4);
+  const spread=clamp((t-s.litT)*260,0,175);
+  for(const p of s.roots){ const side=p.u<0.5?-1:1, f=p.u<0.5?p.u*2:(p.u-0.5)*2;
+    let x=clamp(s.x+side*f*spread,b.x0+10,b.x1-10), y=3+p.v*7+Math.sin(t*2+p.ph);
+    if(s.press){ const k=clamp((t-s.press.t0)/0.45,0,1); x=lerp(x,s.press.x+(p.v-0.5)*14,k*0.85); y=lerp(y,-6-p.w*12,k*0.7); }
+    p.tx=x; p.ty=y; p.c=p.w<0.6?0:1; p.a=0.42+0.45*s.binv*Math.abs(Math.sin(t*3+f*4)); }
+  if(s.press&&!s.press.done&&t-s.press.t0>0.45){ s.press.done=true; pressKnot(s,s.press.x); }
+  stepPs(s.ps,dt,80,10); stepPs(s.roots,dt,s.press?60:30,8);
+  emit(s.ps,s.gl+0.35*s.inv); emit(s.roots,1);
+}
+function pressKnot(s,x){
+  const b=G.banks[s.bank]; x=clamp(x,b.x0+26,b.x1-26); if(Math.abs(x-s.x)<28) x=s.x+(x<s.x?-28:28);
+  const goal=b.anchorR, conn=goal&&anchorConn(goal), sg=goal?(Math.sign(goal.x-x)||1):1;
+  const dir=conn?-PI/2+rnd(-0.3,0.3):(sg>0?rnd(-0.45,-0.15):-PI+rnd(0.15,0.45));
+  let k=G.knots.find(k=>k.role==='garden'&&k.bank===s.bank);
+  if(k){ k.x=x; k.app=0.2; k.dir=dir; }
+  else { if(G.lamps.filter(L=>L.bank===s.bank).length>=12) return; k=mkKnot('garden',s.bank,x,0,dir); }
+  S.appear(); burst(x,-16,16,0,90,0.6); note('base press knot b'+s.bank+' x'+Math.round(x));
+}
+function updSeed(sd,dt){
+  if(!sd.ps.length) return;
+  if(sd.taken){ const s=sd.to, h=s&&s.ps.length?sproutHead(s):{x:sd.x,y:-30};
+    for(const p of sd.ps){ p.tx=h.x; p.ty=h.y; p.a=0.8; }
+    if(G.t-sd.tt>1.1){ dropPs(sd.ps,true); return; } }
+  else for(const p of sd.ps){ p.tx=sd.x+(p.u-0.5)*12; p.ty=-3-p.v*4-Math.abs(Math.sin(G.t*1.3+p.ph))*2; p.a=0.32; }
+  stepPs(sd.ps,dt,sd.taken?40:30,7); emit(sd.ps,1);
+}
+function updGarden(dt){
+  for(const b of G.banks) updBank(b,dt);
+  for(const br of G.bridges) updBridge(br,dt);
+  for(const s of G.streets) updStreet(s,dt);
+  for(const ar of G.arches) updArch(ar,dt);
+  for(const L of G.lamps) updLamp(L,dt);
+  for(let i=G.sprouts.length-1;i>=0;i--){ const s=G.sprouts[i]; if(s) updSprout(s,dt); }
+  for(let i=G.knots.length-1;i>=0;i--){ const k=G.knots[i]; if(k) updKnot(k,dt); }
+  for(const sd of G.seeds) updSeed(sd,dt);
+  updPreview(dt);
+  if(G.transformAt>0&&G.t>=G.transformAt&&!ACT) startTree();
+}
+
+/* ============================ TREE ============================ */
+const SLOT_T=[0.36,0.6,0.84];
+const SQ=[[-1,-1],[1,-1],[1,1],[-1,1]];
+const PUSH={N:3.2,T:6,F:1.8,S:4.2}, GAP={N:0.38,T:0.62,F:0.24,S:0.48};
+const HOUSE_LEN=230, LEN_MIN=110, LEN_MAX=360;
+function startTree(){
+  G.phase='transform'; G.tt=0; S.transform(); note('transform');
+  G.mem.lampSpots=G.lamps.map(L=>({bank:L.bank,rel:L.x-G.banks[L.bank].x0}));
+  const B=G.banks[1], Xc=(B.x0+B.x1)/2;
+  const T={Xc,J:{x:Xc,y:-300},trunk:[],branches:[],lanterns:[],roads:[],fw:[],fest:false,festT:-1,reset:null,fountain:null,memWin:[],
+    sig:'',sigT:0,hl:null,fseed:R()<0.5?-1:1,beat:0,beatI:0,houseN:0};
+  G.T=T;
+  for(const b of G.banks){ for(const p of b.ps){ p.gx=p.x; p.gy=p.y; p.dl=0.3+Math.min(1.5,Math.abs(p.x-Xc)/600)+R()*0.35; p.u=R(); p.v=R(); p.w=R(); T.trunk.push(p); } b.ps=[]; }
+  const base=[-PI+0.6+rnd(-0.12,0.12),-PI/2+rnd(-0.14,0.14),-0.6+rnd(-0.12,0.12)];
+  for(let i=0;i<3;i++) T.branches.push({i,ang:base[i],angT:base[i],ang0:base[i],len:0,lenT:0,lv:0,len0:i===1?135:155,drag:null,grow:false,ps:[],decor:[],
+    house:{lit:false,litT:-9,ps:[],win:[],ap:0,tk:0},wm:{ang:R()*TAU,spd:0,spinning:false,pattern:null,q:[],cyc:0,ps:[],flash:0},
+    lanterns:[],hl:0,inv:0,flash:0,running:false});
+  const srcs=[...G.lamps,...G.streets.filter(s=>s.lit)];
+  srcs.forEach((L,i)=>{ const st=L.kind==='street';
+    T.lanterns.push({kind:'lantern',id:UID++,type:st?'S':L.type,ps:L.ps,x:L.x,y:st?-L.h:-L.hd,vx:0,vy:-20,holder:null,root:-1,drag:null,prev:null,prevI:0,flash:0,dl:1.4+i*0.13,inv:0});
+    L.ps=[]; });
+  let bi=0;
+  for(const ln of T.lanterns){ for(let k=0;k<3;k++){ const br=T.branches[(bi+k)%3]; if(br.lanterns.length<2){ br.lanterns.push(ln); ln.holder=br; bi=(bi+k+1)%3; break; } } }
+  assignRoots();
+  const dec=[]; const take=ps=>{ for(const p of ps) dec.push(p); ps.length=0; };
+  for(const L of G.lamps){ take(L.fl); take(L.patch); }
+  for(const s of G.streets){ take(s.roots); take(s.ps); }
+  for(const ar of G.arches) take(ar.ps);
+  for(const br of G.bridges) take(br.ps);
+  for(const s of G.sprouts){ take(s.ps); take(s.fl); }
+  for(const k of G.knots) take(k.ps);
+  for(const sd of G.seeds) take(sd.ps);
+  take(G.preview);
+  dec.forEach((p,i)=>{ const br=T.branches[i%3];
+    if(br.decor.length<80){ p.u=R(); p.v=R(); p.dl=1.5+R()*1.3; br.decor.push(p); }
+    else { PN--; fx(p.x,p.y,rnd(-20,20),rnd(-60,-10),rnd(0.4,0.9),p.c,p.r,p.a*0.7,-10); } });
+  G.lamps=[]; G.streets=[]; G.arches=[]; G.bridges=[]; G.sprouts=[]; G.knots=[]; G.seeds=[];
+  for(const h of G.mem.houses){ const m={x:Xc+h.dx,y:T.J.y+h.dy,ps:[],used:false,to:null,tt:0}; fitPs(m.ps,6,0,1.8,0.25,m.x,m.y,4); T.memWin.push(m); }
+  layoutFest(T);
+}
+function assignRoots(){ const T=G.T; if(!T) return; let k=0; for(const ln of T.lanterns) ln.root=(!ln.holder&&!ln.drag)?k++:-1; }
+function rootPos(T,k){ const side=k%2?1:-1, idx=k>>1, row=(idx/5)|0, col=idx%5; return {x:T.Xc+side*(100+col*46+row*23),y:-18-row*46}; }
+function brTip(b){ const J=G.T.J; return {x:J.x+Math.cos(b.ang)*b.len,y:J.y+Math.sin(b.ang)*b.len}; }
+function brCtrl(b){ const J=G.T.J, a=angLerp(b.ang0,b.ang,0.5), L=b.len*0.5; return {x:J.x+Math.cos(a)*L,y:J.y+Math.sin(a)*L}; }
+function brPt(b,t){ const J=G.T.J, c=brCtrl(b), e=brTip(b); return {x:qv(J.x,c.x,e.x,t),y:qv(J.y,c.y,e.y,t)}; }
+function distToBranch(b,x,y){ const J=G.T.J, c=brCtrl(b), e=brTip(b); let m=1e9;
+  for(let i=2;i<=14;i++){ const t=i/14, d=hyp(qv(J.x,c.x,e.x,t)-x,qv(J.y,c.y,e.y,t)-y); if(d<m) m=d; } return m; }
+function nearBranch(x,y){ const T=G.T, th=Math.max(85,44/cam.z); let best=null,bd=th;
+  for(const b of T.branches){ const d=Math.min(distToBranch(b,x,y),hyp(brTip(b).x-x,brTip(b).y-y)); if(d<bd){ bd=d; best=b; } } return best; }
+
+function updTree(dt){
+  const T=G.T; if(!T) return;
+  G.tt+=dt; const tt=G.tt, tr=G.phase==='transform', t=G.t, J=T.J;
+  if(tr&&tt>2.0) for(const b of T.branches) if(b.lenT===0) b.lenT=b.len0;
+  if(tr&&tt>5.2){ G.phase='tree'; note('tree ready'); }
+  for(const p of T.trunk){ let x,y;
+    if(p.w<0.18){ x=T.Xc+(p.u-0.5)*720; y=Math.pow(p.v,2)*34; }
+    else { const u=p.u, hw=lerp(62,20,Math.pow(u,0.7))+(u<0.08?(0.08-u)*520:0); y=lerp(0,J.y,u); x=T.Xc+(p.v-0.5)*2*hw+Math.sin(u*7+t*0.4)*4; }
+    if(tr){ const lp=ease((tt-p.dl)/1.3);
+      if(lp<=0){ x=p.gx; y=p.gy-Math.abs(Math.sin(t*30+p.ph))*Math.min(1,tt)*2.5; }
+      else { x=lerp(p.gx,x,lp); y=lerp(p.gy,y,lp)-Math.sin(lp*PI)*60; } }
+    p.tx=x; p.ty=y; p.c=p.w>0.84?0:1; }
+  stepPs(T.trunk,dt,tr?24:30,7); emit(T.trunk,0.95);
+  for(const b of T.branches) updBranch(b,dt,tr,tt);
+  for(const ln of T.lanterns) updLantern(ln,dt,tr,tt);
+  updRoads(dt); updFest(dt); updMemWin(dt); updFountain(dt);
+  if(T.fest&&!T.reset&&t-T.festT>9){ T.reset=mkKnot('reset',-1,T.Xc,-2,-PI/2+rnd(-0.6,0.6)); S.appear(); note('reset knot'); }
+  for(let i=G.knots.length-1;i>=0;i--){ const k=G.knots[i]; if(k) updKnot(k,dt); }
+}
+function updBranch(b,dt,tr,tt){
+  const T=G.T, t=G.t, J=T.J;
+  if(b.drag){ const dx=b.drag.x-J.x, dy=b.drag.y-J.y, a=Math.atan2(dy,dx); let L=clamp(hyp(dx,dy),LEN_MIN,LEN_MAX);
+    const sn=Math.sin(a); if(sn>0.05) L=Math.min(L,Math.max(LEN_MIN,(-70-J.y)/sn));
+    b.angT=a; b.lenT=L; }
+  else if(b.grow) b.lenT=Math.min(LEN_MAX,b.lenT+dt*120);
+  b.lv+=((b.lenT-b.len)*30-b.lv*6)*dt; b.len+=b.lv*dt; if(b.len<0) b.len=0;
+  b.ang=angLerp(b.ang,b.angT,1-Math.exp(-dt*(b.drag?14:6)));
+  b.flash=Math.max(0,b.flash-dt*1.5); b.hl+=((T.hl===b?1:0)-b.hl)*(1-Math.exp(-dt*10));
+  if(!b.house.lit&&b.len>=HOUSE_LEN-2&&!tr) lightHouse(b);
+  const c=brCtrl(b), e=brTip(b);
+  fitPs(b.ps,Math.round(30+b.len*0.12),1,2.3,0.6,J.x,J.y,6);
+  for(const p of b.ps){ const u=p.u, x=qv(J.x,c.x,e.x,u), y=qv(J.y,c.y,e.y,u);
+    const dx=2*(1-u)*(c.x-J.x)+2*u*(e.x-c.x), dy=2*(1-u)*(c.y-J.y)+2*u*(e.y-c.y), dl=hyp(dx,dy)||1;
+    const th=16*(1-0.65*u)*(p.v-0.5);
+    p.tx=x-dy/dl*th; p.ty=y+dx/dl*th+Math.sin(t*1.2+u*5+b.i)*1.5*u; p.c=p.w<0.25?0:1; p.a=0.6+0.3*b.hl+0.3*b.flash; }
+  for(const p of b.decor){
+    if(tr&&tt<p.dl){ p.tx=p.x; p.ty=p.y-0.4; continue; }
+    const u=p.u, x=qv(J.x,c.x,e.x,u), y=qv(J.y,c.y,e.y,u), off=Math.sin(u*22+t*0.8+p.ph)*16*(1-0.65*u)*0.6;
+    p.tx=x+off*0.5; p.ty=y+off; p.a=0.7; }
+  stepPs(b.ps,dt,60,9); stepPs(b.decor,dt,tr?14:40,tr?4:8);
+  emit(b.ps,1+b.inv*0.6); emit(b.decor,0.9);
+  // house
+  const h=b.house; h.ap+=(((b.len>90)?1:0)-h.ap)*(1-Math.exp(-dt*3)); h.tk=Math.max(0,h.tk-dt*1.6);
+  const hx=e.x, hy=e.y-b.inv*Math.abs(Math.sin(t*4.2))*5;
+  fitPs(h.ps,h.ap>0.05?62:0,1,2.1,0.6,hx,hy,8);
+  const sc=h.ap*(1+h.tk*0.12*Math.sin(t*28));
+  for(const p of h.ps){ let x,y;
+    if(p.w<0.5){ x=(p.u-0.5)*42; y=-2-p.v*28; }
+    else if(p.w<0.82){ const s=(p.w-0.5)/0.32, sd=p.u<0.5?-1:1; x=sd*(1-s)*28; y=-31-s*22; }
+    else { x=(p.u-0.5)*8; y=-p.v*14; }
+    p.tx=hx+x*sc; p.ty=hy+y*sc; p.c=(p.w>=0.82&&h.lit)?0:1; p.a=(h.lit?0.72:0.26)*(p.w<0.5?0.8:1)*(1+b.inv*0.5); }
+  for(let i=0;i<h.win.length;i++){ const p=h.win[i], sd=i<7?-1:1, j=i%7;
+    p.tx=hx+(sd*11+((j%3)-1)*3)*sc+Math.sin(t*20+i)*h.tk*2; p.ty=hy+(-19+(((j/3)|0)-1)*3)*sc; p.a=0.95; p.c=0; }
+  stepPs(h.ps,dt,70,9); stepPs(h.win,dt,h.lit&&t-h.litT<1.5?14:60,h.lit&&t-h.litT<1.5?4:9);
+  emit(h.ps,1); emit(h.win,1+h.tk);
+  // windmill on roof
+  updWm(b,dt);
+  const w=b.wm; fitPs(w.ps,h.ap>0.05?26:0,0,2.2,0.7,hx,hy-62,4);
+  const hubx=hx, huby=hy-64*sc;
+  for(let i=0;i<w.ps.length;i++){ const p=w.ps[i];
+    if(i<24){ const bl=i%4, al=((i>>2)+1)/6.2, a=w.ang+bl*TAU/4+al*0.35, rr=28*al*sc; p.tx=hubx+Math.cos(a)*rr; p.ty=huby+Math.sin(a)*rr; p.c=bl%2?0:1; }
+    else { p.tx=hubx; p.ty=huby+(i-23)*5*sc; p.c=1; }
+    p.a=(w.spinning?0.9:0.38)*(1+w.flash*0.5); }
+  stepPs(w.ps,dt,140,12); emit(w.ps,1);
+}
+function updWm(b,dt){
+  const w=b.wm, t=G.t;
+  while(w.q.length&&t>=w.q[0].t){ const e=w.q.shift(); w.spd+=PUSH[e.ty]*e.v; w.flash=1; S.wind(e.ty,e.i,e.v);
+    const ln=b.lanterns[e.i]; if(ln) ln.flash=Math.max(ln.flash,e.v);
+    if(e.ty==='F'&&!e.second) w.q.unshift({t:t+0.12,ty:'F',i:e.i,v:e.v*0.8,second:true}); }
+  if(w.spinning&&!w.q.length&&t>=w.cyc) queuePattern(w,t,0.4);
+  w.spd*=Math.exp(-dt*(w.spinning?0.7:1.2)); if(w.spinning&&w.spd<0.5) w.spd=0.5;
+  w.ang+=w.spd*dt; w.flash=Math.max(0,w.flash-dt*2);
+}
+function queuePattern(w,t0,v){ let t=t0; w.pattern.forEach((ty,i)=>{ w.q.push({t,ty,i,v}); t+=GAP[ty]; }); w.cyc=t+0.7; }
+function wmStart(b,pattern,delay){
+  const w=b.wm, changed=!w.pattern||w.pattern.join('')!==pattern.join('');
+  w.spinning=true; w.pattern=pattern.slice(); w.q=[]; queuePattern(w,G.t+(delay||0),1);
+  note('windmill '+b.i+' '+pattern.join('')+(changed?' (new)':''));
+}
+function runBranch(b){
+  const T=G.T, pts=[]; for(let i=0;i<=24;i++) pts.push(brPt(b,i/24));
+  const e=brTip(b); pts.push({x:e.x,y:e.y-16}); pts.push({x:e.x,y:e.y-64});
+  b.running=true; b.flash=1;
+  const pk=packet(pts,300,[],()=>{ b.running=false;
+    if(!b.house.lit) b.lenT=Math.max(b.lenT,HOUSE_LEN+12);
+    if(b.lanterns.length===3){ const pat=b.lanterns.map(l=>l.type); wmStart(b,pat,0);
+      for(const r of T.roads){ const o=r.a===b?r.b:r.b===b?r.a:null; if(o&&!o.wm.spinning) wmStart(o,pat,0.7); }
+      if(!T.fest) startFest(); } });
+  pk.marks=SLOT_T.map((st,k)=>({d:pk.cum[Math.round(st*24)],fn:()=>{ const ln=b.lanterns[k]; if(ln){ ln.flash=1; S.wind(ln.type,k,0.8); burst(ln.x,ln.y,6,0,60,0.4,2); } }}));
+  note('light runs br'+b.i+' ['+b.lanterns.map(l=>l.type).join('')+']');
+}
+function lightHouse(b){
+  const h=b.house, T=G.T; if(h.lit) return; h.lit=true; h.litT=G.t; T.houseN++; S.house();
+  const e=brTip(b);
+  for(let i=0;i<14&&PN<PMAX;i++){ const a=R()*TAU, rr=rnd(130,230); h.win.push(mkP(e.x+Math.cos(a)*rr,e.y-20+Math.sin(a)*rr,0,2.4,1)); }
+  burst(e.x,e.y-14,20,0,120,0.9);
+  for(const m of T.memWin){ if(!m.used&&hyp(m.x-e.x,m.y-e.y)<95){ m.used=true; m.to=b; bell(mtof(88),0.07,1.2,0.3,2); note('memory window'); } }
+  note('house lit br'+b.i);
+}
+function tapHouse(b){ const h=b.house; h.tk=1; if(h.lit){ S.tickle(); if(b.wm.spinning){ b.wm.spd+=2; b.wm.flash=1; } } else S.sleepy(); }
+
+/* ---------- lanterns ---------- */
+function updLantern(ln,dt,tr,tt){
+  const T=G.T, t=G.t; ln.flash=Math.max(0,ln.flash-dt*1.5);
+  let tx,ty;
+  if(ln.drag){ tx=ln.drag.x; ty=ln.drag.y; }
+  else if(ln.holder){ const b=ln.holder, k=b.lanterns.indexOf(ln), p=brPt(b,SLOT_T[k]||0.5); tx=p.x; ty=p.y+18; }
+  else { const p=rootPos(T,Math.max(0,ln.root)); tx=p.x; ty=p.y; }
+  if(tr&&tt<ln.dl){ tx=ln.x; ty=ln.y-5; }
+  const K=ln.drag?260:42, D=ln.drag?22:8.5;
+  ln.vx+=((tx-ln.x)*K-ln.vx*D)*dt; ln.vy+=((ty-ln.y)*K-ln.vy*D)*dt; ln.x+=ln.vx*dt; ln.y+=ln.vy*dt;
+  const sw=ln.holder&&!ln.drag?Math.sin(t*1.8+ln.id)*0.12-ln.vx*0.002:0, cs=Math.cos(sw), sn=Math.sin(sw);
+  fitPs(ln.ps,42,0,2.3,0.85,ln.x,ln.y,4);
+  const r=11*(1+ln.inv*0.15*Math.abs(Math.sin(t*4.5))+ln.flash*0.25), cx=ln.x, cy=ln.y-ln.inv*Math.abs(Math.sin(t*4.2))*4, ty_=ln.type;
+  for(const p of ln.ps){ let ox,oy;
+    if(p.w<0.14){ ox=0; oy=-r-2-p.u*10; p.c=1; p.a=ln.holder?0.55:0.0; }
+    else {
+      if(ty_==='F'){ if(p.v<0.65){ const k=(p.u*5)|0, a=k*TAU/5-PI/2, pa=(p.u*5%1)*TAU, pr=r*0.55*Math.sqrt(p.v/0.65); ox=Math.cos(a)*r*0.95+Math.cos(pa)*pr; oy=Math.sin(a)*r*0.95+Math.sin(pa)*pr; p.c=1; }
+        else { const a=p.u*TAU, rr=r*0.5*Math.sqrt((p.v-0.65)/0.35); ox=Math.cos(a)*rr; oy=Math.sin(a)*rr; p.c=0; } }
+      else if(ty_==='T'){ const a=p.u*TAU, rr=Math.sqrt(p.v); ox=Math.cos(a)*rr*r*0.65; oy=Math.sin(a)*rr*r*1.45; p.c=p.v>0.85?1:0; }
+      else if(ty_==='S'){ if(p.v<0.4){ const s=p.u*4, sd=s|0, f=s-sd, hw=r*0.9, A=SQ[sd], B=SQ[(sd+1)%4];
+          ox=lerp(A[0],B[0],f)*hw; oy=lerp(A[1],B[1],f)*hw; p.c=1; }
+        else { const a=p.u*TAU, rr=r*0.6*Math.sqrt((p.v-0.4)/0.6); ox=Math.cos(a)*rr; oy=Math.sin(a)*rr; p.c=0; } }
+      else { const a=p.u*TAU+t*0.3, rr=r*Math.sqrt(p.v); ox=Math.cos(a)*rr; oy=Math.sin(a)*rr; p.c=0; }
+      p.a=0.85; }
+    p.tx=cx+ox*cs-oy*sn; p.ty=cy+ox*sn+oy*cs; }
+  stepPs(ln.ps,dt,ln.drag?200:(tr?30:100),ln.drag?18:10);
+  emit(ln.ps,0.9+0.6*ln.flash+0.4*ln.inv);
+}
+function pickLantern(ln,w){
+  ln.prev=ln.holder; ln.prevI=0;
+  if(ln.holder){ const b=ln.holder; ln.prevI=b.lanterns.indexOf(ln); b.lanterns.splice(ln.prevI,1);
+    if(b.lanterns.length<3&&b.wm.spinning){ b.wm.spinning=false; b.wm.q=[]; note('windmill '+b.i+' slows'); } }
+  ln.holder=null; ln.drag={x:w.x,y:w.y}; ln.flash=1; assignRoots(); S.pick();
+}
+function dropLantern(ln,cancel){
+  const T=G.T, d=ln.drag; ln.drag=null; T.hl=null;
+  const tb=(!cancel&&d)?nearBranch(d.x,d.y):null;
+  if(tb){
+    if(tb.lanterns.length>=3){ const old=tb.lanterns.shift(); old.holder=null; old.flash=1; }
+    tb.lanterns.push(ln); ln.holder=tb; S.drop(); burst(ln.x,ln.y,8,0,60,0.4);
+    note('attach '+ln.type+' -> br'+tb.i+' ['+tb.lanterns.map(l=>l.type).join('')+']');
+    if(tb.lanterns.length===3) runBranch(tb);
+  } else if(ln.prev&&ln.prev.lanterns.length<3){ const b=ln.prev; b.lanterns.splice(Math.min(ln.prevI,b.lanterns.length),0,ln); ln.holder=b; if(b.lanterns.length===3) runBranch(b); }
+  else ln.holder=null;
+  ln.prev=null; assignRoots();
+}
+
+/* ---------- roads, festival, fountain ---------- */
+function updRoads(dt){
+  const T=G.T, br=T.branches;
+  for(let i=0;i<3;i++) for(let j=i+1;j<3;j++){ const a=br[i], b=br[j], ea=brTip(a), eb=brTip(b), d=hyp(ea.x-eb.x,ea.y-eb.y);
+    const r=T.roads.find(r=>r.a===a&&r.b===b);
+    if(!r&&a.house.lit&&b.house.lit&&d<210){ const nr={a,b,f:0,ps:[],walk:0}; T.roads.push(nr); onRoad(nr); }
+    else if(r&&d>250){ dropPs(r.ps); T.roads.splice(T.roads.indexOf(r),1); note('road break'); } }
+  for(const r of T.roads){ r.f=Math.min(1,r.f+dt*1.4);
+    const ea=brTip(r.a), eb=brTip(r.b), pa={x:ea.x,y:ea.y-6}, pb={x:eb.x,y:eb.y-6}, c={x:(pa.x+pb.x)/2,y:Math.min(pa.y,pb.y)-40};
+    fitPs(r.ps,28,0,2.1,0.75,pa.x,pa.y,3);
+    for(const p of r.ps){ let tt=p.u; if(r.f<1) tt=p.u<0.5?Math.min(p.u,r.f*0.5):Math.max(p.u,1-r.f*0.5);
+      p.tx=qv(pa.x,c.x,pb.x,tt); p.ty=qv(pa.y,c.y,pb.y,tt)+(p.v-0.5)*4; p.c=p.w<0.35?1:0; p.a=0.75; }
+    r.walk-=dt;
+    if(r.walk<=0&&r.f>=1){ r.walk=0.8; const pts=[]; for(let k=0;k<=10;k++){ const tt=k/10; pts.push({x:qv(pa.x,c.x,pb.x,tt),y:qv(pa.y,c.y,pb.y,tt)}); } if(R()<0.5) pts.reverse(); packet(pts,150,[],null).lite=true; }
+    stepPs(r.ps,dt,70,9); emit(r.ps,1); }
+}
+function onRoad(r){
+  const T=G.T; S.road(); const ea=brTip(r.a), eb=brTip(r.b); burst((ea.x+eb.x)/2,(ea.y+eb.y)/2-30,18,null,100,0.8);
+  note('road br'+r.a.i+'-br'+r.b.i);
+  if(r.a.wm.spinning&&!r.b.wm.spinning) wmStart(r.b,r.a.wm.pattern,0.7);
+  else if(r.b.wm.spinning&&!r.a.wm.spinning) wmStart(r.a,r.b.wm.pattern,0.7);
+  if(!T.fountain&&((T.roads.length===3&&R()<0.45)||R()<0.06)){
+    let x=0,y=0; for(const b of T.branches){ const e=brTip(b); x+=e.x/3; y+=e.y/3; }
+    T.fountain={x,y:y-20,t0:G.t}; S.fountain(); note('fountain'); }
+}
+function updFountain(dt){
+  const T=G.T, f=T.fountain; if(!f) return; const age=G.t-f.t0;
+  if(age>6){ T.fountain=null; return; }
+  for(let i=0;i<4;i++) fx(f.x+rnd(-6,6),f.y,rnd(-55,55),rnd(-300,-200),rnd(1.1,1.6),R()<0.5?0:1,rnd(2,3),0.9,260,0.5);
+}
+function startFest(){ const T=G.T; T.fest=true; T.festT=G.t; S.success(); layoutFest(T); note('festival '+T.fw.length); }
+function layoutFest(T){
+  const pos=[];
+  for(const b of T.branches){ const L=Math.max(1,b.lenT), e={x:T.J.x+Math.cos(b.angT)*L,y:T.J.y+Math.sin(b.angT)*L};
+    const n=clamp(Math.round((L-140)/55),0,4);
+    let fxv=Math.cos(b.angT)*0.85, fyv=Math.sin(b.angT)*0.85-0.6; const fl=hyp(fxv,fyv)||1; fxv/=fl; fyv/=fl;
+    for(let k=0;k<n;k++){ const d=120+k*84, sd=(k%2?1:-1)*(16+k*12)*T.fseed;
+      pos.push({x:e.x+fxv*d-fyv*sd,y:Math.min(-150,e.y+fyv*d+fxv*sd),r:40-k*4,b:b.i}); } }
+  if(pos.length<2){ pos.push({x:T.J.x-120,y:T.J.y-300,r:32,b:1},{x:T.J.x+120,y:T.J.y-320,r:32,b:1}); }
+  if(pos.length>10) pos.length=10;
+  while(T.fw.length>pos.length) T.fw.pop();
+  for(let i=0;i<pos.length;i++){ let w=T.fw[i]; if(!w){ w={x:pos[i].x,y:pos[i].y,ang:R()*TAU,spd:0,ap:0}; T.fw.push(w); }
+    w.tx=pos[i].x; w.ty=pos[i].y; w.r=pos[i].r; w.b=pos[i].b; }
+}
+function updFest(dt){
+  const T=G.T, t=G.t;
+  T.sigT-=dt;
+  if(T.sigT<=0){ T.sigT=0.25; const sig=T.branches.map(b=>Math.round(b.lenT/30)+':'+Math.round(b.angT*5)).join('|');
+    if(sig!==T.sig){ T.sig=sig; layoutFest(T); if(T.fest) note('fest layout n='+T.fw.length+' L='+Math.round(T.branches[0].lenT)+' U='+Math.round(T.branches[1].lenT)+' R='+Math.round(T.branches[2].lenT)); } }
+  for(const w of T.fw){ const k=1-Math.exp(-dt*2); w.x+=(w.tx-w.x)*k; w.y+=(w.ty-w.y)*k;
+    w.ap=Math.min(1,w.ap+dt*(G.phase==='transform'?0.35:1));
+    const src=T.branches[w.b]; const tg=T.fest?(src.wm.spinning?src.wm.spd*0.9:0.6):0;
+    w.spd+=(tg-w.spd)*(1-Math.exp(-dt*1.5)); w.ang+=w.spd*dt;
+    if(T.fest&&R()<dt*w.spd*0.8){ const a=w.ang+((R()*4)|0)*TAU/4; fx(w.x+Math.cos(a)*w.r,w.y+Math.sin(a)*w.r,Math.cos(a+1.6)*40,Math.sin(a+1.6)*40,0.6,R()<0.5?0:1,2.2,0.8,30,1.5); } }
+  if(T.fest){ T.beat-=dt;
+    if(T.beat<=0){ T.beat=0.5; const pats=T.branches.filter(b=>b.wm.spinning).map(b=>b.wm.pattern);
+      if(pats.length){ const p=pats[T.beatI%pats.length], ty=p[T.beatI%3]; bell(mtof((TONE[ty]||69)+12+((T.beatI%6)===5?7:0)),0.03,0.6,0,2); }
+      T.beatI++; } }
+}
+function updMemWin(dt){
+  const T=G.T;
+  for(const m of T.memWin){ if(!m.ps.length) continue;
+    if(m.used){ const e=brTip(m.to); for(const p of m.ps){ p.tx=e.x; p.ty=e.y-13; p.a=0.9; } m.tt+=dt; if(m.tt>1.2){ dropPs(m.ps,true); continue; } }
+    else m.ps.forEach((p,i)=>{ p.tx=m.x+((i%3)-1)*5; p.ty=m.y+(((i/3)|0)-0.5)*5; p.a=0.22; });
+    stepPs(m.ps,dt,30,7); emit(m.ps,1); }
+}
+
+/* ---------- reset to a new garden ---------- */
+function startReset(k){
+  const T=G.T; if(!T) return;
+  G.mem.houses=T.branches.filter(b=>b.house.lit).map(b=>{ const e=brTip(b); return {dx:e.x-T.J.x,dy:e.y-T.J.y}; });
+  G.mem.cycles++;
+  S.unravel(5); note('reset -> new garden');
+  const fall=[]; const take=ps=>{ for(const p of ps){ p.vx+=rnd(-60,60); p.vy+=rnd(-160,-40); fall.push(p); } ps.length=0; };
+  take(T.trunk);
+  for(const b of T.branches){ take(b.ps); take(b.decor); take(b.house.ps); take(b.house.win); take(b.wm.ps); }
+  for(const ln of T.lanterns) take(ln.ps);
+  for(const r of T.roads) take(r.ps);
+  for(const m of T.memWin) take(m.ps);
+  if(k){ take(k.ps); removeKnot(k); }
+  for(const kk of G.knots) take(kk.ps); G.knots=[];
+  PK.length=0;
+  G.fall=fall; G.phase='reset'; G.rt=0; T.fw=[]; T.reset=null;
+}
+function updReset(dt){
+  G.rt+=dt; const f=G.fall; if(!f) return;
+  for(const p of f){ p.vy+=380*dt; p.vx*=Math.exp(-dt*1.2); p.x+=p.vx*dt; p.y+=p.vy*dt; if(p.y>40){ p.y=40; p.vy*=-0.3; } }
+  emit(f,0.9);
+  if(G.rt>1.3){ G.fall=null; newGarden(f); }
+}
+
+/* ============================ CAMERA FOCUS ============================ */
+function focusBox(){
+  if(G.phase==='garden'&&G.banks.length){ const b=G.banks; let x0,x1;
+    const bi=Math.min(1,G.stage), bk=b[bi]; let mn=bk.anchorR.x-190;
+    for(const k of G.knots) if(k.bank===bi&&k.role==='garden') mn=Math.min(mn,k.x-95);
+    for(const L of G.lamps) if(L.bank===bi) mn=Math.min(mn,L.x-60);
+    for(const s of G.sprouts) if(s.bank===bi) mn=Math.min(mn,s.x-60);
+    if(bi===0){ x0=Math.max(b[0].x0-12,mn); x1=G.streets[0].x+95; }
+    else { x0=Math.min(b[1].x0-60,mn); x1=G.streets[1].x+95; }
+    let top=-290;
+    for(const L of G.lamps) if(L.x>x0&&L.x<x1) top=Math.min(top,-L.h-60);
+    for(const s of G.sprouts) if(s.x>x0&&s.x<x1) top=Math.min(top,s.y-60);
+    return {x0,x1,y0:top,y1:105}; }
+  if(G.T&&(G.phase==='tree'||G.phase==='transform')){ const T=G.T; let x0=T.Xc-300,x1=T.Xc+300,y0=T.J.y-210; const y1=70;
+    if(G.phase==='transform'&&G.tt<0.8) return lastBox;
+    for(const b of T.branches){ const L=Math.max(b.lenT,1), ex=T.J.x+Math.cos(b.angT)*L, ey=T.J.y+Math.sin(b.angT)*L; x0=Math.min(x0,ex-70); x1=Math.max(x1,ex+70); y0=Math.min(y0,ey-90); }
+    for(const w of T.fw){ x0=Math.min(x0,w.tx-w.r-20); x1=Math.max(x1,w.tx+w.r+20); y0=Math.min(y0,w.ty-w.r-24); }
+    for(const ln of T.lanterns) if(!ln.holder&&ln.root>=0){ const p=rootPos(T,ln.root); x0=Math.min(x0,p.x-30); x1=Math.max(x1,p.x+30); }
+    return {x0,x1,y0,y1}; }
+  return lastBox;
+}
+
+/* ============================ INPUT ============================ */
+let lastInput=0;
+function hitGarden(wx,wy){
+  const hr=30/cam.z; let best=null,bs=1e9;
+  const cand=(o,part,x,y,r,bias)=>{ const rr=Math.max(r,hr), d=hyp(wx-x,wy-y); if(d<rr){ const s=d/rr-bias; if(s<bs){ bs=s; best={o,part}; } } };
+  for(const k of G.knots){ const c=knotCenter(k); cand(k,'knot',c.x,c.y,k.R+12,0.3); }
+  for(const s of G.sprouts){ if(s.app<0.3) continue; const h=sproutHead(s); cand(s,'sprout',h.x,h.y,20,0.2); }
+  for(const L of G.lamps){ cand(L,'lamp',L.x,-L.hd,22,0.1); if(Math.abs(wx-L.x)<hr*0.6&&wy<-10&&wy>-L.hd&&0.55<bs){ bs=0.55; best={o:L,part:'lamp'}; } }
+  for(const s of G.streets){ cand(s,'head',s.x,-s.h,26,0);
+    if(Math.abs(wx-s.x)<hr*0.5&&wy<-44&&wy>-s.h&&0.7<bs){ bs=0.7; best={o:s,part:'head'}; }
+    if(s.lit&&Math.abs(wx-s.x)<178&&wy>-Math.max(46,hr)&&wy<Math.max(50,hr)){ const s2=0.75+Math.abs(wx-s.x)/2000; if(s2<bs){ bs=s2; best={o:s,part:'base'}; } } }
+  if(!best) for(const b of G.banks){ if(wx>b.x0-10&&wx<b.x1+10&&wy>-30&&wy<90){ best={o:b,part:'ground'}; break; } }
+  return best;
+}
+function hitTree(wx,wy){
+  const T=G.T, hr=30/cam.z; let best=null,bs=1e9;
+  const cand=(o,part,x,y,r,bias)=>{ const rr=Math.max(r,hr), d=hyp(wx-x,wy-y); if(d<rr){ const s=d/rr-bias; if(s<bs){ bs=s; best={o,part}; } } };
+  if(T.reset&&!T.reset.dead){ const c=knotCenter(T.reset); cand(T.reset,'knot',c.x,c.y,T.reset.R+12,0.3); }
+  for(const ln of T.lanterns) cand(ln,'lantern',ln.x,ln.y,16,0.2);
+  for(const b of T.branches){ const e=brTip(b); cand(b,'tip',e.x,e.y-26,40,0.15); }
+  for(const b of T.branches){ const d=distToBranch(b,wx,wy); if(d<Math.max(16,hr*0.7)){ const s=0.75+d/200; if(s<bs){ bs=s; best={o:b,part:'body'}; } } }
+  for(const w of T.fw) cand(w,'fw',w.x,w.y,w.r,-0.1);
+  if(!best&&wy>-60&&wy<70) best={o:null,part:'tground'};
+  return best;
+}
+function downOn(A){
+  const o=A.o, w=s2w(A.x,A.y);
+  switch(A.part){
+    case 'knot': o.press=true; o.sqv+=14; o.exv+=14; S.knot(); { const c=knotCenter(o); burst(c.x,c.y,8,0,70,0.4,2); } note('knot touch '+o.role); break;
+    case 'sprout': o.hold=true; o.ht=0; o.pulse=1; S.grow(0); break;
+    case 'lamp': o.hold=true; o.ht=0; o.tk=Math.max(o.tk,0.5); bell(mtof(pent(74,(R()*5)|0)),0.06,0.3,0,2); break;
+    case 'head': if(o.lit){ o.tk=1; S.tickle(); } else { o.tk=0.4; S.sleepy(); } break;
+    case 'base': o.press={x:w.x,t0:G.t,done:false}; bell(mtof(50),0.12,0.8,0,1); break;
+    case 'ground': o.wob={x:w.x,t:G.t}; S.wob(); break;
+    case 'lantern': pickLantern(o,w); break;
+    case 'tip': o.house.tk=0.6; bell(mtof(pent(67,o.i*2)),0.07,0.4,0,2); break;
+    case 'body': o.flash=0.6; bell(mtof(pent(62,o.i*2)),0.05,0.4,0,2); break;
+    case 'fw': o.spd+=2.5; bell(mtof(pent(79,(R()*5)|0)),0.05,0.5,0,2); break;
+    case 'tground': S.wob(); for(let i=0;i<4;i++) fx(w.x+rnd(-8,8),w.y,rnd(-20,20),rnd(-50,-20),0.5,1,2,0.5,60); break;
+  }
+}
+function moveOn(A){
+  const o=A.o; if(!o) return; const w=s2w(A.x,A.y);
+  switch(A.part){
+    case 'knot': if(A.moved>8){ o.press=false; o.drag={x:w.x,y:w.y}; const c=knotCenter(o), L=hyp(w.x-c.x,w.y-c.y), st=Math.min(9,(L/45)|0); if(st!==o.stepI){ o.stepI=st; S.stretch(st); } } break;
+    case 'sprout': { const h=sproutHead(o); if(hyp(w.x-h.x,w.y-h.y)>Math.max(60,70/cam.z)){ o.hold=false; A.o=null; } } break;
+    case 'lamp': if(A.moved>24){ o.hold=false; A.o=null; } break;
+    case 'base': if(A.moved>36&&o.press&&!o.press.done){ o.press=null; A.o=null; } break;
+    case 'lantern': if(o.drag){ o.drag.x=w.x; o.drag.y=w.y; G.T.hl=nearBranch(w.x,w.y); } break;
+    case 'tip': if(A.moved>8){ o.drag={x:w.x,y:w.y}; o.grow=false; } break;
+    case 'body': if(A.moved>20) o.grow=false; break;
+  }
+}
+function upOn(A,cancel){
+  const o=A.o; if(!o) return; const dur=G.t-A.t0;
+  switch(A.part){
+    case 'knot': o.press=false; if(o.drag) releaseKnot(o,cancel); else if(!cancel){ o.sqv-=6; o.exv+=6; } break;
+    case 'sprout': if(o.hold){ o.hold=false; if(!cancel&&dur<HOLD_T+0.02&&A.moved<14) tapSprout(o); } break;
+    case 'lamp': o.hold=false; if(!cancel&&dur<0.3&&A.moved<14) tapLamp(o); break;
+    case 'base': o.press=null; break;
+    case 'lantern': dropLantern(o,cancel); break;
+    case 'tip': if(o.drag){ o.drag=null; S.drop(); note('branch '+o.i+' len='+Math.round(o.lenT)); } else if(!cancel&&dur<0.3) tapHouse(o); o.grow=false; break;
+    case 'body': o.grow=false; break;
+  }
+}
+function onDown(e){
+  if(e.cancelable) e.preventDefault();
+  audioInit(); lastInput=G.t; HAND.stop=true;
+  if(ACT) return;
+  try{ cv.setPointerCapture(e.pointerId); }catch(_){}
+  const w=s2w(e.clientX,e.clientY);
+  const h=G.phase==='garden'?hitGarden(w.x,w.y):G.phase==='tree'?hitTree(w.x,w.y):null;
+  ACT={id:e.pointerId,o:h?h.o:null,part:h?h.part:null,sx:e.clientX,sy:e.clientY,x:e.clientX,y:e.clientY,t0:G.t,moved:0};
+  if(h) downOn(ACT);
+  if(!G.first) G.first={t:G.t,part:ACT.part};
+}
+function onMove(e){
+  if(!ACT||e.pointerId!==ACT.id) return; if(e.cancelable) e.preventDefault();
+  ACT.x=e.clientX; ACT.y=e.clientY; ACT.moved=Math.max(ACT.moved,hyp(ACT.x-ACT.sx,ACT.y-ACT.sy)); lastInput=G.t;
+  moveOn(ACT);
+}
+function onUp(e){ if(!ACT||e.pointerId!==ACT.id) return; const A=ACT; ACT=null; lastInput=G.t; upOn(A,false); }
+function onCancel(e){ if(!ACT||(e&&e.pointerId!=null&&e.pointerId!==ACT.id)) return; const A=ACT; ACT=null; upOn(A,true); }
+cv.addEventListener('pointerdown',onDown,{passive:false});
+cv.addEventListener('pointermove',onMove,{passive:false});
+cv.addEventListener('pointerup',onUp,{passive:false});
+cv.addEventListener('pointercancel',onCancel,{passive:false});
+cv.addEventListener('lostpointercapture',e=>{ if(ACT&&e.pointerId===ACT.id) onCancel(e); });
+window.addEventListener('blur',()=>{ if(ACT) onCancel(null); });
+['touchstart','touchmove','touchend','gesturestart','gesturechange','gestureend','dblclick','contextmenu','selectstart'].forEach(ev=>
+  document.addEventListener(ev,e=>{ if(e.cancelable) e.preventDefault(); },{passive:false}));
+window.addEventListener('resize',resize);
+window.addEventListener('orientationchange',()=>setTimeout(resize,150));
+
+/* ============================ GUIDANCE ============================ */
+let INV=null;
+function invite(){
+  if(G.phase==='garden'){
+    const bi=Math.min(1,G.stage), b=G.banks[bi]; if(!b) return null;
+    const goal=b.anchorR, conn=goal&&anchorConn(goal);
+    const sp=G.sprouts.filter(s=>s.bank===bi&&s.app>0.5);
+    if(sp.length){ sp.sort((p,q)=>Math.abs(p.x-goal.x)-Math.abs(q.x-goal.x)+(q.y-p.y)*0.01); const s=sp[0], h=sproutHead(s); return {o:s,kind:'hold',x:h.x,y:h.y}; }
+    const k=G.knots.find(k=>k.role==='garden'&&k.bank===bi), st=bi===1?G.streets[0]:null;
+    const kv=k=>{ const c=knotCenter(k); return {o:k,kind:'pull',x:c.x,y:c.y,dx:Math.cos(k.dir),dy:Math.sin(k.dir),len:170}; };
+    if(!conn){ if(k) return kv(k); if(st&&st.lit) return {o:st,part:'base',kind:'press',x:clamp(st.x+120,b.x0+30,b.x1-30),y:2}; }
+    const br=G.bridges[bi];
+    if(br&&!br.open&&br.knot){ const c=knotCenter(br.knot); return {o:br.knot,kind:'pull',x:c.x,y:c.y,dx:1,dy:-0.15,len:130}; }
+    if(k) return kv(k);
+    return null;
+  }
+  if(G.phase==='tree'&&G.T){ const T=G.T, brs=T.branches;
+    const tipInv=b=>{ const e=brTip(b); return {o:b,part:'tip',kind:'drag',x:e.x,y:e.y-20,dx:Math.cos(b.ang),dy:Math.sin(b.ang),len:115}; };
+    if(!T.fest){
+      if(!brs.some(b=>b.house.lit)) return tipInv(brs.slice().sort((p,q)=>(q.lanterns.length-p.lanterns.length)||((p.i===1)-(q.i===1)))[0]);
+      const cands=brs.filter(b=>b.lanterns.length<3&&!b.running); if(!cands.length) return null;
+      cands.sort((p,q)=>(q.house.lit-p.house.lit)||(q.lanterns.length-p.lanterns.length)); const tb=cands[0];
+      let ln=T.lanterns.find(l=>!l.holder&&!l.drag);
+      if(!ln){ const ot=brs.filter(b=>b!==tb&&b.lanterns.length).sort((p,q)=>p.lanterns.length-q.lanterns.length); if(ot.length) ln=ot[0].lanterns[ot[0].lanterns.length-1]; }
+      if(!ln) return null;
+      const sp=brPt(tb,SLOT_T[tb.lanterns.length]||0.6);
+      return {o:ln,kind:'carry',x:ln.x,y:ln.y,ex:sp.x,ey:sp.y+18};
+    }
+    if(G.t-T.festT<28){ for(const b of [brs[0],brs[2]]) if(b.lenT<215) return tipInv(b); }
+    if(T.reset&&!T.reset.dead){ const c=knotCenter(T.reset); return {o:T.reset,kind:'pull',x:c.x,y:c.y,dx:Math.cos(T.reset.dir),dy:Math.sin(T.reset.dir),len:140}; }
+  }
+  return null;
+}
+let sparkT=0;
+function updGuide(dt){
+  if(!ACT) INV=invite();
+  const k=1-Math.exp(-dt*5), on=o=>INV&&INV.o===o&&INV.part!=='base'?1:0;
+  for(const o of G.knots) o.inv+=(on(o)-o.inv)*k;
+  for(const o of G.sprouts) o.inv+=(on(o)-o.inv)*k;
+  for(const o of G.lamps) o.inv+=(on(o)-o.inv)*k;
+  for(const s of G.streets){ s.inv+=(on(s)-s.inv)*k; const tg=INV&&INV.o===s&&INV.part==='base'?1:0; s.binv+=(tg-s.binv)*k; }
+  if(G.T){ for(const b of G.T.branches) b.inv+=(on(b)-b.inv)*k; for(const l of G.T.lanterns) l.inv+=(on(l)-l.inv)*k; }
+  sparkT-=dt;
+  if(INV&&!ACT&&sparkT<=0){ sparkT=0.28; const a=R()*TAU, rr=28/cam.z;
+    fx(INV.x+Math.cos(a)*rr,INV.y+Math.sin(a)*rr,-Math.cos(a)*rr*1.2,-Math.sin(a)*rr*1.2,0.6,INV.kind==='pull'?1:0,2,0.7,0,1);
+    if(INV.kind==='press'){ const st=INV.o; ring(INV.x,INV.y,18/cam.z,8,0); } }
+  if(INV&&!HAND.on&&!ACT&&G.t-lastInput>4&&!HAND.seen[INV.kind]&&G.phase!=='transform') startHand(INV);
+}
+const HAND={on:false,t:0,ps:[],seen:{},inv:null,stop:false,a:0,rk:-1};
+function startHand(inv){ HAND.on=true; HAND.t=0; HAND.inv=Object.assign({},inv); HAND.seen[inv.kind]=1; HAND.stop=false; HAND.a=0; HAND.rk=-1; note('hand demo '+inv.kind); }
+function updHand(dt){
+  if(!HAND.on){ if(HAND.ps.length) dropPs(HAND.ps); return; }
+  HAND.t+=dt; const I=HAND.inv, t=HAND.t, u=1/cam.z, DUR=2.8;
+  if(HAND.stop||t>DUR) HAND.a-=dt*(HAND.stop?6:4); else HAND.a=Math.min(1,HAND.a+dt*3);
+  if(HAND.a<=0&&(HAND.stop||t>DUR)){ HAND.on=false; dropPs(HAND.ps); lastInput=G.t; return; }
+  const drag=I.kind==='pull'||I.kind==='drag'||I.kind==='carry';
+  const ex=I.kind==='carry'?I.ex:I.x+(I.dx||0)*(I.len||0), ey=I.kind==='carry'?I.ey:I.y+(I.dy||0)*(I.len||0);
+  let fx_=I.x, fy_=I.y, press=0;
+  if(t<0.5){ const k=ease(t/0.5); fx_=I.x+(1-k)*50*u; fy_=I.y+(1-k)*60*u; }
+  else if(t<0.8) press=ease((t-0.5)/0.3);
+  else if(t<2.1){ press=1; if(drag){ const k=ease((t-0.8)/1.3); fx_=lerp(I.x,ex,k); fy_=lerp(I.y,ey,k); } }
+  else { press=1-ease((t-2.1)/0.4); if(drag){ fx_=ex; fy_=ey; } }
+  if(!drag&&press>0.9){ const rk=(t*3)|0; if(rk!==HAND.rk){ HAND.rk=rk; ring(fx_,fy_,22*u,10,1); } }
+  fitPs(HAND.ps,64,1,2,0.85,fx_,fy_,6);
+  const lift=(1-press)*10, pr=2.3/Math.max(cam.z,0.92);
+  for(let i=0;i<HAND.ps.length;i++){ const p=HAND.ps[i]; let ox,oy; p.r=pr;
+    if(i<14){ const f=i/13, sd=(i%2)*2-1; ox=f*10+sd*3.2; oy=f*40; }
+    else if(i<20){ const f=(i-14)/5; ox=17+f*9; oy=34+f*10; }
+    else if(i<26){ const f=(i-20)/5; ox=27+f*8; oy=38+f*10; }
+    else if(i<50){ const a=(i-26)/24*TAU, rr=(i%2?20:11); ox=24+Math.cos(a)*rr; oy=66+Math.sin(a)*rr*0.85; }
+    else if(i<56){ const f=(i-50)/5; ox=6-f*13; oy=56-f*7; }
+    else { const f=(i-55)/8; if(drag&&t>0.8){ p.tx=lerp(I.x,fx_,f); p.ty=lerp(I.y,fy_,f); p.a=0.4*HAND.a; p.r=pr*1.2; continue; } ox=24; oy=66; }
+    p.tx=fx_+(ox+lift*0.5)*u; p.ty=fy_+(oy+lift)*u; p.a=0.8*HAND.a; }
+  if(press>0.5&&R()<0.3) fx(fx_,fy_,rnd(-20,20)*u,rnd(-20,20)*u,0.4,1,pr*1.3,0.6,0,3);
+  stepPs(HAND.ps,dt,220,18); emit(HAND.ps,1);
+}
+
+/* ============================ AUDIO BED ============================ */
+function updBed(dt){
+  if(!AU.ok||!AU.c||!AU.shG) return; AU.bedT-=dt; if(AU.bedT>0) return; AU.bedT=0.12;
+  let lvl=0;
+  if(G.phase==='garden') lvl=Math.min(1,G.lamps.length*0.06+G.streets.filter(s=>s.lit).length*0.25+G.bridges.filter(b=>b.lit).length*0.15);
+  else if(G.T){ const T=G.T; lvl=Math.min(1,0.3+T.houseN*0.12+T.branches.filter(b=>b.wm.spinning).length*0.12+(T.fest?0.25:0)); }
+  try{ AU.shG.gain.setTargetAtTime(0.0001+lvl*0.022*(0.55+0.45*R()),AU.c.currentTime,0.06); }catch(e){}
+  grain(lvl);
+}
+
+/* ============================ LOOP ============================ */
+let raf=0,last=0;
+function update(dt){
+  G.t+=dt;
+  if(ACT&&(ACT.part==='tip'||ACT.part==='body')&&ACT.o&&!ACT.o.drag&&G.t-ACT.t0>0.3&&ACT.moved<20) ACT.o.grow=true;
+  if(G.phase==='garden') updGarden(dt);
+  else if(G.phase==='transform'||G.phase==='tree') updTree(dt);
+  else if(G.phase==='reset') updReset(dt);
+  updStars(dt); updPackets(dt); updGuide(dt); updHand(dt); updFX(dt); updBed(dt);
+  updCam(dt,!!(ACT&&ACT.o&&ACT.o.drag));
+}
+function frame(ts){
+  raf=requestAnimationFrame(frame);
+  let dt=(ts-last)/1000; last=ts; if(!(dt>0)) dt=0.016; if(dt>0.05) dt=0.05;
+  const t0=performance.now();
+  try{ update(dt); render(); }catch(err){ if(!G.err){ G.err=String(err&&err.stack||err); console.error(err); } }
+  const ms=performance.now()-t0; G.perf=G.perf?G.perf*0.95+ms*0.05:ms; if(ms>G.perfMax) G.perfMax=ms; G.pnMax=Math.max(G.pnMax,PN);
+}
+function hidden(){ if(raf){ cancelAnimationFrame(raf); raf=0; } if(ACT) onCancel(null); if(AU.c&&AU.c.state==='running'){ try{ AU.c.suspend().catch(()=>{}); }catch(e){} } }
+function shown(){ last=performance.now(); if(!raf) raf=requestAnimationFrame(frame); if(AU.c&&AU.ok){ try{ AU.c.resume().catch(()=>{}); }catch(e){} } }
+document.addEventListener('visibilitychange',()=>{ if(document.hidden) hidden(); else shown(); });
+window.addEventListener('pagehide',hidden);
+window.addEventListener('pageshow',()=>{ if(!document.hidden) shown(); });
+
+/* test/inspection hook (no UI) */
+window.__G={G,cam,w2s,s2w,get PN(){return PN;},get FXN(){return FX.length;},get ACT(){return ACT;},get INV(){return INV;},get raf(){return raf;},AU,HAND};
+
+resize(); initStars(); newGarden(null); lastInput=0;
+last=performance.now(); raf=requestAnimationFrame(frame);
+})();
+</script>
+</body>
+</html>
