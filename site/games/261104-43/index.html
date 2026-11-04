@@ -1,0 +1,1363 @@
+<!doctype html>
+<html lang="ja">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1,maximum-scale=1,minimum-scale=1,user-scalable=no,viewport-fit=cover">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="mobile-web-app-capable" content="yes">
+<meta name="theme-color" content="#efe3c6">
+<meta name="robots" content="noindex,nofollow">
+<title>どん、しゃらら！おじいさんが覚える影絵の大合奏</title>
+<style>
+html,body{margin:0;padding:0;width:100%;height:100%;background:#efe3c6;overflow:hidden;overscroll-behavior:none;
+  touch-action:none;-webkit-user-select:none;user-select:none;-webkit-touch-callout:none;-webkit-tap-highlight-color:transparent}
+canvas{position:fixed;left:0;top:0;width:100%;height:100%;display:block;touch-action:none;-webkit-touch-callout:none;outline:none}
+#safe{position:fixed;left:0;top:0;width:0;height:0;visibility:hidden;pointer-events:none;
+  padding-top:env(safe-area-inset-top);padding-right:env(safe-area-inset-right);padding-bottom:env(safe-area-inset-bottom);padding-left:env(safe-area-inset-left)}
+</style>
+
+<script src="../../gf-playlog.js" defer></script>
+</head>
+<body>
+<canvas id="c"></canvas>
+<div id="safe"></div>
+<script>
+(()=>{
+'use strict';
+/* ===================================================================
+   どん、しゃらら！おじいさんが覚える影絵の大合奏 (game 261104-43)
+   music_rhythm / silhouette / no_animal_princess
+   手前の楽器をタップ → 影絵の奏者が受け取って演奏 → 指揮者のおじいさんが
+   反復(AA)・掛け合い(ABAB)・前奏(XX→Y)/先導(Y→XX)を覚える → 四人そろうと
+   幕の背景光が虹色に替わり幕が上がって町 → 太鼓で行進・鈴で窓の住人
+   → 広場で最後の楽器が終演の形を決め、指揮棒で大合奏 → 幕が閉じて次の回。
+   文字UIなし。画像・音はすべて手続き生成。外部通信なし。
+   =================================================================== */
+const cv=document.getElementById('c');
+const ctx=cv.getContext('2d',{alpha:false});
+const TAU=Math.PI*2,PI=Math.PI;
+const clamp=(v,a,b)=>v<a?a:v>b?b:v;
+const lerp=(a,b,t)=>a+(b-a)*t;
+const ease=t=>{t=clamp(t,0,1);return t*t*(3-2*t);};
+const easeOut=t=>{t=clamp(t,0,1);return 1-(1-t)*(1-t)*(1-t);};
+const easeBack=t=>{t=clamp(t,0,1);const s=1.7,u=t-1;return 1+(s+1)*u*u*u+s*u*u;};
+const sgn=v=>v<0?-1:1;
+const QS=new URLSearchParams(location.search);
+function mulberry(a){return function(){a|=0;a=a+0x6D2B79F5|0;let t=Math.imul(a^a>>>15,1|a);t=t+Math.imul(t^t>>>7,61|t)^t;return((t^t>>>14)>>>0)/4294967296;};}
+let R=mulberry(7);
+const rnd=(a,b)=>a+R()*(b-a);
+const FR=Math.random;const frnd=(a,b)=>a+FR()*(b-a);
+const TS=clamp(parseFloat(QS.get('ts'))||1,0.25,8);
+let seedBase=(parseInt(QS.get('seed'),10)>>>0)||((Date.now()%1000003)+17);
+const NOW=()=>performance.now()/1000;
+
+/* ---------------- palette (背景は最大2色＋墨黒) ---------------- */
+const INK='#140f0b';
+const CREAM='#efe3c6';
+const AMBER='#eba43a';
+const RB=['#d5352a','#2a5cb2','#f0be2a','#2b994c']; // 赤 青 黄 緑
+
+/* ---------------- canvas / layout ---------------- */
+let W=1,H=1,DPR=1,DPRCAP=2;
+const SAFE={l:0,r:0,t:0,b:0};
+const L={};
+function readSafe(){
+  try{const cs=getComputedStyle(document.getElementById('safe'));
+    SAFE.t=parseFloat(cs.paddingTop)||0;SAFE.r=parseFloat(cs.paddingRight)||0;
+    SAFE.b=parseFloat(cs.paddingBottom)||0;SAFE.l=parseFloat(cs.paddingLeft)||0;}catch(e){}
+}
+function computeLayout(){
+  const land=W>H*1.05;
+  L.land=land;
+  L.side=Math.max(SAFE.l,SAFE.r);
+  L.valH=Math.max(H*0.045,24)+SAFE.t;
+  L.ledgeH=Math.max(H*0.028,14)+SAFE.b;
+  L.ledgeY=H-L.ledgeH;
+  L.S=land?Math.min(H*0.215,W*0.17):Math.min(H*0.195,W*0.41);
+  L.I=land?Math.min(H*0.17,W*0.12):Math.min(W*0.21,H*0.115);
+  L.instTop=L.ledgeY-L.I*1.22;
+  L.floorY=L.instTop-Math.max(H*0.035,L.S*0.13);
+  L.floorH=Math.max(3,L.S*0.035);
+  L.hbY=L.floorY-L.S*1.1;          // 家並みの下端 = 背景帯の境目
+  L.wY=L.hbY-L.S*0.56;             // 町の塀の上 / 広場の高台
+  L.podH=L.S*0.08;
+  L.cx=W/2;
+  const u=W-2*L.side;
+  L.colX=[L.side+u*0.125,L.side+u*0.36,L.side+u*0.64,L.side+u*0.875];
+  L.colB=[0,(L.colX[0]+L.colX[1])/2,W/2,(L.colX[2]+L.colX[3])/2,W];
+  // 行進の間隔
+  const md=Math.min(L.S*0.52,(W*0.8)/4.3);
+  L.marchD=md;L.marchS=Math.min(1,md/(L.S*0.52));
+  L.rs=L.S*0.46;                   // 住人の大きさ
+  L.U=Math.min(L.S,W/4.2);         // 広場の造形の単位
+  L.stepLen=0.62;                  // 一歩で進む距離(S単位)
+  L.stepH=clamp((L.wY-(L.valH+L.S*0.45)-L.S*0.44)/3,L.S*0.1,0.32*L.U); // 終演の階段一段の高さ（上の札と重ならない）
+}
+function resize(){
+  readSafe();
+  const vv=window.visualViewport;
+  W=Math.max(1,Math.round(vv?vv.width:window.innerWidth));
+  H=Math.max(1,Math.round(vv?vv.height:window.innerHeight));
+  DPR=Math.min(DPRCAP,window.devicePixelRatio||1);
+  cv.width=Math.round(W*DPR);cv.height=Math.round(H*DPR);
+  cv.style.width=W+'px';cv.style.height=H+'px';
+  computeLayout();
+}
+
+/* ---------------- audio (Web Audio 合成) ---------------- */
+const AU={c:null,out:null,nb:null,off:0,bk:new Map(),bkClean:0};
+function audioInit(){
+  if(AU.c){if(AU.c.state!=='running')AU.c.resume().catch(()=>{});return;}
+  const AC=window.AudioContext||window.webkitAudioContext;if(!AC)return;
+  try{
+    const c=new AC();AU.c=c;
+    const comp=c.createDynamicsCompressor();
+    comp.threshold.value=-16;comp.knee.value=12;comp.ratio.value=4;comp.attack.value=0.004;comp.release.value=0.22;
+    const m=c.createGain();m.gain.value=0.8;m.connect(comp);comp.connect(c.destination);AU.out=m;
+    const len=c.sampleRate|0;const b=c.createBuffer(1,len,c.sampleRate);const d=b.getChannelData(0);
+    for(let i=0;i<len;i++)d[i]=Math.random()*2-1;AU.nb=b;
+    const s=c.createBufferSource();s.buffer=c.createBuffer(1,1,22050);s.connect(c.destination);s.start(0);
+    AU.off=c.currentTime-songT;
+    if(c.state!=='running')c.resume().catch(()=>{});
+  }catch(e){AU.c=null;}
+}
+const audioOn=()=>!!(AU.c&&AU.c.state==='running');
+function toCtx(ts){return Math.max(AU.c.currentTime+0.004,ts+AU.off);}
+function voiceOK(t){ // 連打時の同時発音を制限
+  const k=Math.floor(t*16);const n=(AU.bk.get(k)||0)+1;AU.bk.set(k,n);
+  if(AU.c.currentTime-AU.bkClean>2){AU.bkClean=AU.c.currentTime;const lim=Math.floor(AU.c.currentTime*16)-4;for(const key of AU.bk.keys())if(key<lim)AU.bk.delete(key);}
+  return n<=10;
+}
+function Gn(dest){const g=AU.c.createGain();g.gain.value=0;g.connect(dest||AU.out);return g;}
+function envAt(g,t,a,p,d){g.gain.setValueAtTime(0.0001,t);g.gain.exponentialRampToValueAtTime(Math.max(0.0003,p),t+a);g.gain.exponentialRampToValueAtTime(0.0001,t+a+d);}
+function Os(type,f,t,dur,dest){const o=AU.c.createOscillator();o.type=type;o.frequency.setValueAtTime(f,t);o.connect(dest);o.start(t);o.stop(t+dur+0.05);return o;}
+function Nz(t,dur,dest,ft,fq,q){const s=AU.c.createBufferSource();s.buffer=AU.nb;const f=AU.c.createBiquadFilter();f.type=ft;f.frequency.setValueAtTime(fq,t);f.Q.value=q||0.8;s.connect(f);f.connect(dest);s.start(t,FR()*0.4);s.stop(t+dur+0.02);return f;}
+const mf=m=>440*Math.pow(2,(m-69)/12);
+const PENT=[0,2,4,7,9];
+const pn=(base,st)=>base+PENT[((st%5)+5)%5]+12*Math.floor(st/5);
+function sDrum(t,v,st){
+  if(!voiceOK(t))return;const f=60*Math.pow(1.07,st||0);
+  const g=Gn();envAt(g,t,0.004,0.95*v,0.42);const o=Os('sine',f*2.4,t,0.5,g);o.frequency.exponentialRampToValueAtTime(f,t+0.09);
+  const g2=Gn();envAt(g2,t,0.002,0.4*v,0.07);Nz(t,0.1,g2,'lowpass',1100,0.7);
+  const g3=Gn();envAt(g3,t,0.003,0.28*v,0.22);const o3=Os('triangle',f*1.6,t,0.3,g3);o3.frequency.exponentialRampToValueAtTime(f*0.95,t+0.18);
+}
+function sBell(t,v,st){
+  if(!voiceOK(t))return;const f=mf(pn(84,st||0));
+  [[1,0.3,0.85],[2.41,0.15,0.42],[4.13,0.08,0.24]].forEach(p=>{const g=Gn();envAt(g,t,0.002,p[1]*v,p[2]);Os('sine',f*p[0],t,p[2]+0.05,g);});
+  for(let k=1;k<3;k++){const tt=t+k*0.045;const g=Gn();envAt(g,tt,0.002,0.08*v,0.2);Os('sine',f*1.5*(1+k*0.07),tt,0.25,g);}
+  const gn=Gn();envAt(gn,t,0.001,0.07*v,0.09);Nz(t,0.11,gn,'highpass',7000,0.7);
+}
+function sFlute(t,v,st,dur){
+  if(!voiceOK(t))return;const f=mf(pn(72,st||0));dur=dur||0.42;
+  const g=Gn();g.gain.setValueAtTime(0.0001,t);g.gain.exponentialRampToValueAtTime(0.22*v,t+0.06);
+  g.gain.setValueAtTime(0.22*v,t+dur);g.gain.exponentialRampToValueAtTime(0.0001,t+dur+0.18);
+  const o=Os('sine',f,t,dur+0.22,g);
+  const g2=AU.c.createGain();g2.gain.value=0.22;g2.connect(g);Os('triangle',f,t,dur+0.22,g2);
+  const lfo=AU.c.createOscillator();lfo.frequency.value=5.3;const lg=AU.c.createGain();
+  lg.gain.setValueAtTime(0,t);lg.gain.linearRampToValueAtTime(f*0.012,t+0.25);lfo.connect(lg);lg.connect(o.frequency);lfo.start(t);lfo.stop(t+dur+0.25);
+  const gb=Gn();envAt(gb,t,0.02,0.05*v,0.12);Nz(t,0.16,gb,'bandpass',f*2,2);
+}
+function sXylo(t,v,st){
+  if(!voiceOK(t))return;const f=mf(pn(72,st||0));
+  const g=Gn();envAt(g,t,0.002,0.42*v,0.36);Os('sine',f,t,0.42,g);
+  const g2=Gn();envAt(g2,t,0.001,0.16*v,0.06);Os('sine',f*3.98,t,0.1,g2);
+  const g3=Gn();envAt(g3,t,0.001,0.05*v,0.02);Os('square',f*8,t,0.04,g3);
+}
+function sClap(t,n,v){
+  n=clamp(Math.round(n),1,6);
+  for(let k=0;k<n;k++){const tt=t+k*0.012+FR()*0.006;if(!voiceOK(tt))break;const g=Gn();
+    envAt(g,tt,0.001,(0.2/Math.sqrt(n))*(v||1)*(1+n*0.15),0.07+FR()*0.03);Nz(tt,0.12,g,'bandpass',1100+FR()*700,1.2);}
+}
+function sBass(t,m,dur,v){const g=Gn();envAt(g,t,0.02,0.18*(v||1),dur);const f=AU.c.createBiquadFilter();f.type='lowpass';f.frequency.value=420;f.connect(g);Os('triangle',mf(m),t,dur+0.1,f);}
+function sTick(t,v){const g=Gn();envAt(g,t,0.001,0.04*v,0.03);Nz(t,0.05,g,'highpass',5200,0.7);}
+function sWhoosh(t,v){const g=Gn();g.gain.setValueAtTime(0.0001,t);g.gain.exponentialRampToValueAtTime(0.15*(v||1),t+0.14);g.gain.exponentialRampToValueAtTime(0.0001,t+0.42);
+  const f=Nz(t,0.45,g,'bandpass',420,1.6);f.frequency.exponentialRampToValueAtTime(2400,t+0.38);}
+function sChime(t,v){ // 覚えた！の音（成功時だけ）
+  [0,4,7,12,16].forEach((d,k)=>{const tt=t+k*0.075;const f=mf(84+d);const g=Gn();envAt(g,tt,0.002,0.17*(v||1),0.7);Os('sine',f,tt,0.75,g);
+    const g2=Gn();envAt(g2,tt,0.002,0.05*(v||1),0.3);Os('sine',f*2.76,tt,0.35,g2);});
+}
+function sFanfare(t){ // 虹・大合奏
+  [0,2,4,7,9,12,14,16].forEach((d,k)=>{sXylo(t+k*0.07,0.55,d>9?5+(d-12)/2:[0,1,2,3,4][Math.min(4,k)]);});
+  [0,4,7].forEach(d=>{const g=Gn();envAt(g,t+0.5,0.05,0.09,1.6);Os('triangle',mf(60+d),t+0.5,1.7,g);});
+}
+function sTiny(t){const g=Gn();envAt(g,t,0.002,0.03,0.05);Os('sine',900,t,0.08,g);}
+// 楽器ごとのフレーズ
+// [拍オフセット, 音階ステップ, 音量, 長さ(秒)]
+function phraseOf(i,kind,g){
+  switch(kind){
+    case 'hit':return [[0,g,1]];
+    case 'rep1':return [[0,g,1]];
+    case 'rep2':return [[0,g+1,1]];
+    case 'answer':return i===0?[[0,g+1,0.8],[0.5,g,0.9]]:[[0,g+3,0.85],[0.5,g+1,0.9]];
+    case 'pickup':return [[0,g,0.6],[1/3,g+1,0.7],[2/3,g+2,0.8]];
+    case 'entrance':
+      if(i===0)return [[0,0,1.15],[0.5,0,0.7],[0.75,1,0.8]];
+      if(i===1)return [[0,g+2,1],[0.25,g+3,0.8],[0.5,g+4,0.95]];
+      if(i===2)return [[0,g+5,1,1.0]];
+      return [[0,g,0.9],[0.25,g+2,0.9],[0.5,g+4,0.9],[0.75,g+5,1]];
+    case 'soft':return [[0,g,0.32]];
+    case 'tutti':return [[0,g,1.05]];
+    case 'final':return i===2?[[0,g+5,1.1,1.6]]:i===0?[[0,0,1.2],[0.25,0,0.8],[0.5,1,1.2]]:[[0,g+5,1.1]];
+  }
+  return [[0,g,1]];
+}
+function instAudio(i,kind,tSong,g,vol){
+  if(!audioOn())return;
+  const ph=phraseOf(i,kind,g);
+  for(const n of ph){
+    const t=toCtx(tSong+n[0]*BEAT),v=n[2]*(vol||1);
+    if(i===0)sDrum(t,v,n[1]);else if(i===1)sBell(t,v,n[1]);else if(i===2)sFlute(t,v,n[1],n[3]?n[3]*BEAT:0.42);else sXylo(t,v,n[1]);
+  }
+}
+function tapSound(i,g){
+  if(!audioOn())return;const t=AU.c.currentTime+0.005;
+  if(i===0)sDrum(t,0.75,g);else if(i===1)sBell(t,0.55,g);else if(i===2)sFlute(t,0.55,g+2,0.16);else sXylo(t,0.6,g+2);
+}
+
+/* ---------------- music clock ---------------- */
+const BPM=100,BEAT=60/BPM;
+let songT=0,NOSYNC=false;
+const songBeat=()=>songT/BEAT;
+function advanceClock(dt){
+  songT+=dt;
+  if(audioOn()&&TS===1&&!NOSYNC){
+    const at=AU.c.currentTime-AU.off,d=at-songT;
+    if(Math.abs(d)>0.25)AU.off=AU.c.currentTime-songT;else songT+=d*0.08;
+  }
+}
+const EVQ=[];
+function at(beat,fn){EVQ.push({t:beat*BEAT,fn});}
+function runEvents(){
+  for(let i=0;i<EVQ.length;){if(EVQ[i].t<=songT){const e=EVQ[i];EVQ.splice(i,1);e.fn();}else i++;}
+}
+const nextBeat=()=>{const x=songBeat(),f=x-Math.floor(x);return f<0.16?Math.floor(x):Math.ceil(x);}; // 近い拍へ吸着（少し遅れた入力はその拍として即応答）
+
+/* ---------------- characters / state ---------------- */
+// 奏者の形（背丈・幅・頭の特徴）。顔の中は描かず、輪郭だけで区別する
+const PSPEC=[
+  {h:1.0,w:0.95,hat:'cap'},
+  {h:0.93,w:1.0,hat:'bun',skirt:true},
+  {h:0.76,w:1.0,hat:'pom',child:true},
+  {h:0.98,w:1.12,hat:'tail'},
+];
+const OSPEC={h:0.95,w:1.1,hat:'old'};
+function mkPlayer(i){return {i,joined:false,held:0,form:'stage',pform:'stage',ft:9,fdur:1,
+  hitT:9,hitK:'',hitG:0,flT:9,flDur:0.5,stompT:9,stompA:0,bowT:9,nodT:9,faceTo:-1,faceUntil:0,
+  wobT:9,sched:new Map(),antT:9,cheerT:9,leadT:9,softT:9,lastFace:1,repT:-99};}
+const P=[0,1,2,3].map(mkPlayer);
+const C={form:'stage',pform:'stage',ft:9,fdur:1,face:-1,cueI:0,cueT:9,strokeT:9,beatI:0,prideV:0,nodT:9,wobT:9,
+  offer:0,humT:9,humI:-1,flickT:9,bowT:9,icons:[]};
+const FG=[0,1,2,3].map(()=>({hitT:9,demoT:9,jig:[0,0,0,0,0,0]}));
+let G=null;   // この回の状態
+let M=null;   // この回の記憶（反復・掛け合い）
+const PH={taps:[],lastT:-99,chain:0};
+const PT=[];const PT_MAX=90;
+const FL=[];  // 飛んでいく楽器の影
+const BG={mode:'cur',poolCol:AMBER,poolR:1,top:RB[0],bot:RB[1],ops:[],op:null,opT:0,p:0,k:0,lastBar:-1};
+const DEMO={t:-1,shown:false,target:-1};
+let lastInput=NOW(),firstTouch=false;
+
+/* ---------------- 端末内保存（検証つき） ---------------- */
+const SKEY='gf261104-43-mem';
+const STORE={status:'init',saved:0,saveFail:0,data:null};
+function validCue(c){
+  if(!c||typeof c!=='object'||Array.isArray(c))return false;
+  if(c.k!=='rep'&&c.k!=='duo')return false;
+  if(!Number.isInteger(c.a)||c.a<0||c.a>3)return false;
+  if(c.k==='duo'&&(!Number.isInteger(c.b)||c.b<0||c.b>3||c.b===c.a))return false;
+  return true;
+}
+function validMem(d){
+  if(!d||typeof d!=='object'||Array.isArray(d))return false;
+  if(d.v!==1)return false;
+  if(d.cue!==null&&!validCue(d.cue))return false;
+  if(!Array.isArray(d.order)||d.order.length>4)return false;
+  const seen={};for(const o of d.order){if(!Number.isInteger(o)||o<0||o>3||seen[o])return false;seen[o]=1;}
+  if(!Number.isInteger(d.fin)||d.fin<-1||d.fin>3)return false;
+  if(!Number.isInteger(d.n)||d.n<0||d.n>1e7)return false;
+  return true;
+}
+function loadMem(){
+  let raw=null;
+  try{raw=window.localStorage.getItem(SKEY);}catch(e){STORE.status='denied';return null;}
+  if(raw==null){STORE.status='new';return null;}
+  let d=null;try{d=JSON.parse(raw);}catch(e){d=null;}
+  if(!validMem(d)){STORE.status='bad';try{window.localStorage.removeItem(SKEY);}catch(e){}return null;}
+  STORE.status='ok';return d;
+}
+function cueCopy(c){return c?(c.k==='rep'?{k:'rep',a:c.a}:{k:'duo',a:c.a,b:c.b}):null;}
+function latestCue(){return M&&M.cues.length?M.cues[M.cues.length-1]:null;}
+function saveMem(finished){
+  const prev=STORE.data;
+  const d={v:1,cue:cueCopy(latestCue())||(prev?prev.cue:null),order:G.order.slice(0,4),
+    fin:finished?G.fin.shape:(prev?prev.fin:-1),n:(prev?prev.n:0)+(finished?1:0)};
+  if(!validMem(d))return;
+  STORE.data=d; // 保存できなくても、この起動中の次の回には引き継ぐ
+  try{window.localStorage.setItem(SKEY,JSON.stringify(d));STORE.saved++;}catch(e){STORE.saveFail++;}
+}
+
+/* ---------------- 背景光（幕：生成り＋琥珀 / 虹：上下2色の帯） ---------------- */
+function bgPush(){for(const o of arguments)BG.ops.push(o);}
+function updBG(dt){
+  if(!BG.op&&BG.ops.length){
+    BG.op=BG.ops.shift();BG.opT=0;BG.p=0;const o=BG.op;
+    if(o.k==='pool'){BG.mode='cur';if(o.col)BG.poolCol=o.col;}
+    else if(o.k==='fill'){BG.mode='band';BG.top=BG.bot=o.col;}
+    else if(o.k==='rise'){BG.mode='band';BG.bot=o.col;}
+    else if(o.k==='cur'){BG.mode='cur';BG.poolCol=AMBER;BG.poolR=0;}
+  }
+  const o=BG.op;if(!o)return;
+  BG.opT+=dt;BG.p=o.dur>0?clamp(BG.opT/o.dur,0,1):1;
+  if(o.k==='pool')BG.poolR=lerp(o.from,o.to,ease(BG.p));
+  if(BG.p>=1){
+    if(o.k==='up'||(o.k==='rise'&&o.to==='top'))BG.top=BG.bot;
+    BG.op=null;
+  }
+}
+function bandY(){
+  const o=BG.op;
+  if(o&&o.k==='rise')return lerp(H+2,o.to==='top'?-2:L.hbY,ease(BG.p));
+  if(o&&o.k==='up')return lerp(L.hbY,-2,ease(BG.p));
+  return L.hbY;
+}
+function poolGeom(){return {x:W/2,y:L.floorY-L.S*0.56,rx:Math.min(W*0.47,L.S*3.2),ry:L.S*0.86};}
+function inPool(x,y){if(BG.poolR<=0.001)return false;const g=poolGeom();const dx=(x-g.x)/(g.rx*BG.poolR),dy=(y-g.y)/(g.ry*BG.poolR);return dx*dx+dy*dy<1;}
+function oppAt(x,y){ // 粒の色：その場所の背景ではない方の背景色（なければ黒）
+  if(BG.mode==='cur'){if(BG.poolR<=0.01)return INK;return inPool(x,y)?CREAM:BG.poolCol;}
+  if(BG.top===BG.bot)return INK;
+  return y<bandY()?BG.bot:BG.top;
+}
+function bandNext(fast){
+  const d=(fast?0.4:0.9)*BEAT;BG.k=(BG.k+1)%4;
+  bgPush({k:'up',dur:d},{k:'rise',col:RB[(BG.k+1)%4],to:'hb',dur:d});
+}
+
+/* ---------------- 回（サイクル）の初期化 ---------------- */
+const LOOKS=['top','beret','bob','braid','bowler','curly','scarf','none'];
+function randLook(){ // 乱数は住人の輪郭だけ
+  const child=R()<0.25;
+  return {h:child?rnd(0.7,0.78):rnd(0.86,1.02),w:rnd(0.9,1.25),hat:LOOKS[Math.floor(R()*LOOKS.length)],skirt:R()<0.4,child};
+}
+function makeTown(){
+  const N=12,wins=[];let x=-10;
+  while(x<N*L.stepLen+14){x+=0.42+R()*0.22;wins.push({x,shape:Math.floor(R()*3),op:false,t:0,r:null,w:0.19+R()*0.05,h:0.23+R()*0.06});x+=0.06;}
+  const slits=[];for(let s=-10;s<N*L.stepLen+14;s+=1.1+R()*0.5)slits.push(s);
+  return {N,prog:0,cam:0,wins,slits,res:[],garl:[],arrived:false,hopT:9};
+}
+function newMemory(inh){
+  const m={rep:[false,false,false,false],grow:[0,0,0,0],duo:null,cues:[],learned:0,inh:cueCopy(inh),inhOpen:false,demoDone:false};
+  if(m.inh){
+    if(m.inh.k==='rep')m.rep[m.inh.a]=true;else m.duo=[m.inh.a,m.inh.b];
+    m.cues.push(Object.assign({inh:true},m.inh));m.learned=1;
+  }
+  return m;
+}
+function newCycle(){
+  const cyc=G?G.cycle+1:0;
+  R=mulberry(seedBase+cyc*7919);
+  G={cycle:cyc,phase:'stage',pb:songBeat(),order:[],shake:0,cur:1,curTo:1,town:null,plaza:{taps:0,last:-1},
+    fin:{cur:-1,g:0,prev:-1,pg:0,full:0,F0:0,shape:-1},stepT:9,stepN:0,clapT:9,lastAuto:-1,baton:{on:false,t:0},
+    hint:0,lastI:-1,arr:null};
+  G.town=makeTown();
+  M=newMemory(STORE.data?STORE.data.cue:null);
+  PH.taps.length=0;PH.chain=0;
+  P.forEach(p=>{p.joined=false;p.held=0;p.faceTo=-1;p.repT=-99;p.sched.clear();if(p.form!=='stage')setForm(p,'stage',BEAT*2);});
+  if(C.form!=='stage')setForm(C,'stage',BEAT*2);
+  C.offer=0;
+  if(firstTouch)scheduleInhDemo();
+}
+function setForm(ch,name,dur){if(ch.form===name)return;ch.pform=ch.form;ch.form=name;ch.ft=0;ch.fdur=Math.max(0.01,dur);}
+
+/* ---------------- 演奏の予約 ---------------- */
+function play(i,beat,kind,o){
+  o=o||{};o.cyc=G.cycle;
+  const p=P[i];
+  if(!p.joined&&!o.join){hum(i,beat,kind);return;}
+  const key=Math.round(beat*4);
+  if(p.sched.has(key))return;      // 同じ拍に重ねない（連打しても積み上がらない）
+  p.sched.set(key,kind);
+  const g=o.g!=null?o.g:((kind==='hit'||kind==='rep1'||kind==='rep2')?M.grow[i]:0);
+  instAudio(i,kind,beat*BEAT,g,o.vol||1);
+  at(beat,()=>{p.sched.delete(key);playVisual(i,kind,o,g);});
+}
+function hum(i,beat,kind){ // 持ち手のいない楽器は、おじいさんが口ずさむ
+  instAudio(i,kind==='answer'?'answer':'hit',beat*BEAT,0,0.5);
+  at(beat,()=>{C.humT=0;C.humI=i;C.strokeT=0;iconPop(i);});
+}
+function iconPop(i){C.icons.push({i,t:0});if(C.icons.length>4)C.icons.shift();}
+function playVisual(i,kind,o,g){
+  const p=P[i];
+  if(kind==='soft'){p.softT=0;return;}
+  p.hitT=0;p.hitK=kind;p.hitG=g;
+  if((kind==='rep1'||kind==='rep2')&&!o.norep)p.repT=songT;   // 子どもが鳴らした反復だけを「直前の反復」とする
+  C.cueI=i;C.cueT=0;C.strokeT=0;
+  const hp=heldPos(i);
+  if(i===0){G.shake=Math.min(1.2,G.shake+0.45);}
+  else if(i===1){sparks(hp.x,hp.y,kind==='entrance'||kind==='final'?9:5,charScale(p,i));}
+  else if(i===2){p.flT=0;p.flDur=(kind==='entrance'||kind==='final')?BEAT*1.0:0.42;}
+  else{bounceDots(hp.x,hp.y,kind==='entrance'?4:2,charScale(p,i));}
+  if(kind==='entrance'||kind==='pickup'||kind==='final')p.leadT=0;
+  if(o.join)p.stompT=0;
+  if(g>0&&(kind==='hit'||kind==='rep1'||kind==='rep2')){p.stompT=0;p.stompA=0.35+0.12*g;}  // 反復で動きも育つ
+  if(o.act&&o.cyc===G.cycle&&G.phase==='town')townAct(i);
+}
+
+/* ---------------- タップ → 応答 ---------------- */
+function repRecent(i){ // 直前2小節以内に反復を鳴らした、別の楽器
+  let best=-1,bt=-1e9;
+  for(let x=0;x<4;x++){if(x!==i&&M.rep[x]&&P[x].joined&&P[x].repT>bt){best=x;bt=P[x].repT;}}
+  return best>=0&&songT-bt<8*BEAT?best:-1;
+}
+function onTapInstrument(i){
+  lastInput=NOW();hideDemo();
+  const fg=FG[i];fg.hitT=0;for(let k=0;k<6;k++)fg.jig[k]=frnd(-1,1);
+  if(songT-PH.lastT>4*BEAT)PH.taps.length=0;     // 間があいたら新しいフレーズ
+  const phraseFirst=PH.taps.length===0;
+  const prev=phraseFirst?null:PH.taps[PH.taps.length-1];
+  if(prev&&prev.i===i)PH.chain++;else PH.chain=0;
+  PH.lastT=songT;G.lastI=i;
+  M.grow[i]=Math.min(4,PH.chain);                 // 反復で音程と動きが育つ
+  tapSound(i,M.grow[i]);
+  C.flickT=0;C.cueI=i;C.cueT=0;
+  if(i===0)G.shake=Math.min(1.2,G.shake+0.8);
+  fgBurst(i);
+  const willJoin=!P[i].joined&&G.phase==='stage';
+  PH.taps.push({i,join:willJoin});if(PH.taps.length>12)PH.taps.shift();
+  if(G.phase==='plaza')plazaTap(i);
+  // 前回の合図に別の音を足す → 新しい合図へ更新
+  if(M.inhOpen&&M.inh&&i!==M.inh.a&&!(M.inh.k==='duo'&&i===M.inh.b)&&(P[i].joined||willJoin)){
+    M.inhOpen=false;const a=M.inh.k==='rep'?M.inh.a:M.inh.b;
+    let b=nextBeat();
+    if(willJoin){joinOnly(i);b=Math.ceil(songBeat()+0.85);}
+    learnDuo(a,i,b);PH.taps.length=0;return;
+  }
+  if(willJoin){joinOnly(i);respond(i,phraseFirst,prev,true);return;}
+  if(!P[i].joined)return;   // 幕が閉じる途中など：音と形だけ
+  P[i].antT=0;
+  respond(i,phraseFirst,prev,false);
+}
+function joinOnly(i){
+  const p=P[i];p.joined=true;G.order.push(i);
+  FL.push({i,t:0,dur:0.42,back:false});
+  if(audioOn())sWhoosh(AU.c.currentTime+0.01,0.8);
+  if(G.order.length===4){
+    const b=Math.ceil(songBeat()+0.85);let rb=Math.ceil((b+2)/4)*4;if(rb-b<3)rb+=4;
+    const cyc=G.cycle;at(rb,()=>{if(G.cycle===cyc)startRainbow();});
+  }
+}
+function respond(i,phraseFirst,prev,joining){
+  const b=joining?Math.ceil(songBeat()+0.85):nextBeat();
+  const J=joining?{join:true,act:true}:{act:true};
+  if(!joining){
+    const seq=PH.taps.filter(t=>!t.join).map(t=>t.i),n=seq.length;
+    // ABAB → 掛け合いを覚える
+    if(n>=4&&seq[n-1]===seq[n-3]&&seq[n-2]===seq[n-4]&&seq[n-1]!==seq[n-2]&&P[seq[n-2]].joined){
+      const a=seq[n-4],o=seq[n-3];
+      if(!M.duo||M.duo[0]!==a||M.duo[1]!==o){learnDuo(a,o,b);PH.taps.length=0;return;}
+    }
+    // AA → 二拍の反復を覚える
+    if(n>=2&&seq[n-1]===seq[n-2]&&!M.rep[i]){learnRep(i,b);return;}
+  }
+  const pa=M.duo&&(M.duo[0]===i||M.duo[1]===i)?(M.duo[0]===i?M.duo[1]:M.duo[0]):-1;
+  const duoCall=()=>{ // 覚えた掛け合い：相手が返事をする
+    play(i,b,'hit',J);play(pa,b+1,'answer',{act:true});faceEach(i,pa,b+2.5);
+    const cyc=G.cycle;at(b+2,()=>{if(G.cycle===cyc){P[i].nodT=0;P[pa].nodT=0;}});
+    G.arr={k:'duo',a:i,b:pa,t:songT};};
+  if(!joining&&pa>=0&&P[pa].joined&&prev&&prev.i===pa){duoCall();return;}   // 相手と交互に続ける
+  const town=G.phase==='town';   // 町では「叩いた楽器＝その動き」をすぐ見せるため、前奏・先導は使わない
+  const X=(!town&&prev&&prev.i!==i&&M.rep[prev.i]&&P[prev.i].joined)?prev.i:-1;
+  if(X>=0){ // 太鼓の反復のあとに笛 → 反復が前奏になる
+    play(X,b,'rep1',{act:true});play(X,b+1,'rep2',{act:true});play(i,b+2,'entrance',J);
+    play(X,b+2,'soft');play(X,b+3,'soft');
+    if(pa>=0&&pa!==X&&P[pa].joined){play(pa,b+3,'answer',{act:true});faceEach(i,pa,b+4.5);}
+    G.arr={k:'prelude',a:X,b:i,t:songT};return;
+  }
+  const XL=town?-1:repRecent(i);
+  if(XL>=0&&phraseFirst){ // 笛から始める → 笛が先導し、さっきの反復があとから答える
+    play(i,b,'pickup',J);play(i,b+1,'entrance');play(XL,b+2,'rep1',{act:true,norep:true});play(XL,b+3,'rep2',{act:true,norep:true});
+    G.arr={k:'lead',a:i,b:XL,t:songT};return;
+  }
+  if(!joining&&pa>=0&&P[pa].joined){duoCall();return;}
+  if(M.rep[i]&&!joining){play(i,b,'rep1',J);play(i,b+1,'rep2',J);G.arr={k:'rep',a:i,t:songT};return;}
+  play(i,b,'hit',J);G.arr={k:'hit',a:i,t:songT};
+}
+function faceEach(a,o,untilBeat){P[a].faceTo=o;P[o].faceTo=a;P[a].faceUntil=P[o].faceUntil=untilBeat*BEAT;}
+function addCue(c){c.t0=songT;M.cues.push(c);if(M.cues.length>6)M.cues.shift();M.learned++;M.inhOpen=false;saveMem(false);}
+function successFx(b,icons){
+  if(audioOn())sChime(toCtx(b*BEAT-0.05));
+  const cyc=G.cycle;
+  at(b-0.1,()=>{if(G.cycle!==cyc)return;C.nodT=0;icons.forEach(iconPop);G.flashT=0;});
+}
+function learnRep(i,b){
+  M.rep[i]=true;addCue({k:'rep',a:i});successFx(b,[i,i]);
+  play(i,b,'rep1',{act:true});play(i,b+1,'rep2',{act:true});G.arr={k:'learnRep',a:i,t:songT};
+}
+function learnDuo(a,o,b){
+  M.duo=[a,o];addCue({k:'duo',a,b:o});successFx(b,[a,o]);
+  play(a,b,'hit',{act:true});play(o,b+1,'answer',{act:true});play(a,b+2,'hit',{act:true});play(o,b+3,'answer',{act:true});
+  faceEach(a,o,b+5.5);
+  const cyc=G.cycle;at(b+4,()=>{if(G.cycle===cyc){P[a].bowT=0;P[o].bowT=0;}});
+  G.arr={k:'learnDuo',a,b:o,t:songT};
+}
+function performCue(c,b){
+  if(!c)return;const N={norep:true};
+  if(c.k==='rep'){play(c.a,b,'rep1',N);play(c.a,b+1,'rep2',N);}
+  else{play(c.a,b,'hit',N);play(c.b,b+1,'answer',N);play(c.a,b+2,'hit',N);play(c.b,b+3,'answer',N);
+    if(P[c.a].joined&&P[c.b].joined)faceEach(c.a,c.b,b+4.5);}
+}
+function scheduleInhDemo(){ // 前回覚えた合図を、おじいさんが披露する（音声開始後）
+  if(!M.inh||M.demoDone)return;
+  M.demoDone=true;
+  const b0=Math.ceil((songBeat()+2)/4)*4;const cyc=G.cycle,c=M.inh;
+  at(b0-0.5,()=>{if(G.cycle===cyc)C.nodT=0;});
+  performCue(c,b0);
+  at(b0+1,()=>{if(G.cycle===cyc&&M.cues.length&&M.cues[M.cues.length-1].inh)M.inhOpen=true;});
+}
+
+/* ---------------- 町 ---------------- */
+function townAct(i){if(i===0)marchStep();else if(i===1)openWindow();else if(i===2)garland();else hopWave();}
+function plazaW(){return G.town.N*L.stepLen+W/L.S;}          // 広場の左端（S単位）：出発時は画面の外
+function camW(){return G.town.cam/G.town.N*plazaW();}           // 歩数→カメラ位置
+function winOK(w){return w.x+w.w<plazaW()-0.12;}
+function winSX(w){return (w.x-camW())*L.S;}
+function marchStep(){
+  const T=G.town;if(T.arrived)return;
+  T.prog=Math.min(T.N,T.prog+1);G.stepT=0;G.stepN++;
+  let k=T.res.filter(r=>r.st!=='win').length;
+  T.res.forEach(r=>{if(r.st==='win'){r.st='climb';r.t=0;r.k=k++;}});  // 窓の住人も歩き出す
+  if(T.prog>=T.N){T.arrived=true;const cyc=G.cycle;at(Math.ceil(songBeat()+1.2),()=>{if(G.cycle===cyc)arrivePlaza();});}
+}
+function closedVisible(){const T=G.town;for(const w of T.wins){if(!w.op&&winOK(w)){const sx=winSX(w);if(sx>W*0.04&&sx<W*0.96-w.w*L.S)return true;}}return false;}
+function openWindow(){
+  const T=G.town;
+  if(T.res.length>=12){T.hopT=0;return;}
+  const cand=[];T.wins.forEach((w,j)=>{if(!w.op&&winOK(w)){const sx=winSX(w);if(sx>W*0.04&&sx<W*0.96-w.w*L.S)cand.push(j);}});
+  if(!cand.length){T.hopT=0;return;}
+  const j=cand[Math.floor(R()*cand.length)];   // 乱数は登場する窓だけ
+  const w=T.wins[j];w.op=true;w.t=0;
+  const r={look:randLook(),st:'win',w:j,t:0,k:-1,clapT:9,hopT:9,face:R()<0.5?-1:1};
+  w.r=r;T.res.push(r);
+  const sx=winSX(w)+w.w*L.S/2,sy=(L.wY+L.hbY)/2;sparks(sx,sy,4,L.S*0.6);
+}
+function garland(){
+  const T=G.town;const wx=camW()+(W*0.42)/L.S;
+  T.garl.push({x:wx,len:0,max:0.9+R()*0.5});if(T.garl.length>9)T.garl.shift();
+}
+function hopWave(){G.town.hopT=0;}
+function walkers(){return G.town.res.filter(r=>r.st!=='win');}
+
+/* ---------------- 広場・終演 ---------------- */
+function arrivePlaza(){
+  if(G.phase!=='town')return;
+  G.phase='plaza';G.pb=songBeat();
+  P.forEach(p=>setForm(p,'plaza',BEAT*2));setForm(C,'plaza',BEAT*2);
+  let k=0;G.town.res.forEach(r=>{if(r.st!=='win'){r.st='plaza';r.t=0;r.k=k++;}});
+  G.plaza={taps:0,last:-1};G.fin.cur=-1;G.fin.g=0;
+}
+function setFin(i){const F=G.fin;if(F.cur===i)return;F.prev=F.cur;F.pg=F.g;F.cur=i;F.g=0;}
+function plazaTap(i){
+  G.plaza.taps++;G.plaza.last=i;setFin(i);    // 最後に鳴らした楽器が終演の形を決める
+  const b=nextBeat()+1,n=walkers().length,cyc=G.cycle;
+  if(n>0){if(audioOn())sClap(toCtx(b*BEAT),Math.min(6,1+n/2),0.7);at(b,()=>{if(G.cycle===cyc)G.clapT=0;});}
+  if(!G.baton.on)at(nextBeat()+1,()=>{if(G.cycle===cyc&&G.phase==='plaza'){G.baton.on=true;G.baton.t=0;}});
+}
+function startFinale(){
+  if(G.phase!=='plaza')return;
+  lastInput=NOW();hideDemo();
+  G.phase='finale';G.pb=songBeat();G.baton.on=false;
+  const shape=G.plaza.last>=0?G.plaza.last:G.order[0];
+  G.fin.shape=shape;setFin(shape);G.fin.full=1;
+  saveMem(true);
+  if(audioOn())sFanfare(AU.c.currentTime+0.02);
+  C.flickT=0;C.nodT=0;
+  const F0=Math.ceil((songBeat()+1.6)/2)*2;G.fin.F0=F0;
+  const o=G.order,cyc=G.cycle;
+  // 1小節目：最初に加わった奏者が先頭で入る
+  play(o[0],F0,'pickup');play(o[0],F0+1,'entrance');play(o[1],F0+2,'answer');play(o[1],F0+3,'hit');
+  // 2小節目：覚えた掛け合い（なければ加入順の後半二人）
+  const d=M.duo||[o[2],o[3]];
+  play(d[0],F0+4,'hit');play(d[1],F0+5,'answer');play(d[0],F0+6,'hit');play(d[1],F0+7,'answer');faceEach(d[0],d[1],F0+8);
+  // 3小節目：覚えた反復
+  const reps=[];for(let k=M.cues.length-1;k>=0&&reps.length<2;k--){const c=M.cues[k];if(c.k==='rep'&&reps.indexOf(c.a)<0)reps.push(c.a);}
+  if(!reps.length)reps.push(o[0]);if(reps.length<2)reps.push(o[1]!==reps[0]?o[1]:o[2]);
+  play(reps[0],F0+8,'rep1');play(reps[0],F0+9,'rep2');play(reps[1],F0+10,'rep1');play(reps[1],F0+11,'rep2');
+  // 4小節目：全員
+  const mel=[2,4,3,5];
+  for(let k=12;k<16;k++)for(let i=0;i<4;i++)play(i,F0+k,'tutti',{vol:0.7,g:mel[k-12]});
+  for(let i=0;i<4;i++)play(i,F0+16,'final',{vol:0.85,g:0});
+  const n=walkers().length;
+  for(let k=8;k<=16;k++){if(n>0&&audioOn())sClap(toCtx((F0+k)*BEAT),Math.min(6,1+n/2),0.75);at(F0+k,()=>{if(G.cycle===cyc)G.clapT=0;});}
+  if(audioOn()){const t=toCtx((F0+16)*BEAT);sBass(t,36,BEAT*3,1.3);sChime(t+0.05,0.8);}
+  if(shape===3)at(F0,()=>{if(G.cycle===cyc)P.forEach(p=>setForm(p,'top',BEAT*3));});
+  at(F0+17.2,()=>{if(G.cycle!==cyc)return;P.forEach(p=>p.bowT=0);C.bowT=0;});
+  at(F0+19,()=>{if(G.cycle===cyc)startClose();});
+}
+function startClose(){
+  G.phase='close';G.pb=songBeat();G.curTo=1;
+  bgPush({k:'up',dur:BEAT*0.8},{k:'rise',col:CREAM,to:'top',dur:BEAT*1.2},{k:'cur',dur:0},{k:'pool',from:0,to:1,dur:BEAT*1.2});
+  P.forEach(p=>setForm(p,'stage',BEAT*2.5));setForm(C,'stage',BEAT*2.5);
+  const cyc=G.cycle,b=songBeat();
+  at(b+2.6,()=>{if(G.cycle!==cyc)return;P.forEach(p=>{if(p.joined){FL.push({i:p.i,t:0,dur:0.45,back:true});p.held=0;p.joined=false;}});
+    if(audioOn())sWhoosh(AU.c.currentTime+0.01,0.6);});
+  at(b+4.6,()=>{if(G.cycle===cyc)newCycle();});
+}
+function startRainbow(){
+  if(G.phase!=='stage'||G.order.length<4)return;
+  G.phase='rainbow';G.pb=songBeat();
+  if(audioOn())sFanfare(AU.c.currentTime+0.02);
+  // 琥珀の光が赤に替わって幕いっぱいに広がり、2色ずつ重ね替わる
+  bgPush({k:'pool',col:RB[0],from:1,to:6,dur:BEAT},{k:'fill',col:RB[0],dur:0},{k:'rise',col:RB[1],to:'hb',dur:BEAT*0.5});
+  [2,3,0,1].forEach(c=>bgPush({k:'up',dur:BEAT*0.4},{k:'rise',col:RB[c],to:'hb',dur:BEAT*0.45}));
+  BG.k=0;
+  const cyc=G.cycle,b=Math.round(songBeat());
+  at(b+5,()=>{if(G.cycle===cyc){G.phase='rise';G.curTo=0;if(audioOn())sFlute(toCtx(songT),0.6,5,BEAT*2);}});
+  at(b+7,()=>{if(G.cycle===cyc){P.forEach(p=>setForm(p,'march',BEAT*2));setForm(C,'march',BEAT*2);}});
+  at(b+9,()=>{if(G.cycle===cyc){G.phase='town';G.pb=songBeat();BG.lastBar=Math.floor(songBeat()/4);}});
+}
+
+/* ---------------- 常に流れる曲（伴奏ループ） ---------------- */
+const BASS=[48,43,45,41];
+let loopNext=-1;
+function scheduleLoop(){
+  const hNow=Math.floor((songT+0.1)/(BEAT/2));
+  if(loopNext<0||loopNext<hNow-3)loopNext=hNow;
+  while(loopNext<=hNow){loopStep(loopNext);loopNext++;}
+}
+function loopStep(h){
+  const beat=h/2,isB=h%2===0,bi=((Math.floor(beat)%4)+4)%4,bar=Math.floor(beat/4);
+  const aud=audioOn(),n=G.order.length;
+  const nw=walkers().length;
+  const clapOn=(G.phase==='town'||G.phase==='plaza')&&nw>0;
+  if(aud){
+    const t=toCtx(beat*BEAT);
+    if(isB){
+      sTick(t,bi===0?1:0.5);
+      if(bi===0)sBass(t,BASS[bar%4],BEAT*1.7);
+      if(bi===2)sBass(t,BASS[bar%4]+7,BEAT*1.5,0.6);
+      if(P[0].held>0.5&&(bi===0||(n>=3&&bi===2)))sDrum(t,0.26,0);
+      if(P[1].held>0.5&&n>=2&&(bi===1||bi===3))sBell(t,0.13,bi===1?2:4);
+      if(P[2].held>0.5&&bi===0&&bar%2===0)sFlute(t,0.28,[2,1,0,3][(bar>>1)%4],BEAT*3);
+      if(clapOn&&(bi===1||bi===3))sClap(t,Math.min(6,1+nw/2),0.4+Math.min(0.5,nw*0.05));
+    }else if(P[3].held>0.5&&n>=2&&(bi===2||bi===3))sXylo(t,0.2,[4,5,4,2][h&3]);
+  }
+  if(isB){const cyc=G.cycle;at(beat,()=>{if(G.cycle===cyc)beatPulse(bi,bar);});if(bi===0)autoCue(beat,bar);}
+}
+function beatPulse(bi,bar){
+  const n=G.order.length;
+  C.strokeT=0;C.beatI=bi;
+  P.forEach((p,i)=>{
+    if(p.held>0.5){
+      if(bi===0||bi===2||n>=3){p.stompT=0;p.stompA=0.28+0.12*n;}  // 人数が増えると足踏みが増える
+      if(i===0&&(bi===0||(n>=3&&bi===2)))p.softT=0;
+      if(i===1&&n>=2&&(bi===1||bi===3))p.softT=0;
+      if(n>=3&&bi===3&&bar%2===1)p.cheerT=0;                     // 合いの手
+    }else if(!p.joined&&G.phase==='stage'&&bi%2===0){p.stompT=0;p.stompA=0.16;}  // 待つ足踏み
+  });
+  if(n>=3&&bi===3&&bar%2===1&&audioOn())sClap(toCtx(songT),2,0.45);
+  if((G.phase==='town'||G.phase==='plaza')&&(bi===1||bi===3))G.clapT=0;
+  if(G.phase==='town')G.markT=0;
+}
+function autoCue(beat,bar){ // しばらく触らないと、おじいさんが覚えた合図を出して誘う
+  if(!(G.phase==='stage'||G.phase==='town'||G.phase==='plaza'))return;
+  if(NOW()-lastInput<5.5||bar%4!==0||G.lastAuto===bar)return;
+  const c=latestCue();if(!c)return;
+  if(!P[c.a].joined||(c.k==='duo'&&!P[c.b].joined))return;
+  G.lastAuto=bar;performCue(c,beat);
+}
+
+/* ---------------- 誘導（次の1つだけを跳ねさせる） ---------------- */
+function firstUnjoined(){for(let i=0;i<4;i++)if(!P[i].joined)return i;return -1;}
+function computeHint(){
+  const ph=G.phase;
+  if(ph==='stage'){
+    const n=G.order.length;
+    if(n===0)return 0;
+    if(!M.rep.some(v=>v)){const l=G.lastI;return l>=0&&P[l].joined?l:G.order[n-1];}
+    if(n<3&&!M.duo)return firstUnjoined();
+    if(!M.duo&&n>=2){const a=G.order[n-2],b=G.order[n-1];return G.lastI===b?a:b;}
+    if(n<4)return firstUnjoined();
+    return -1;
+  }
+  if(ph==='town'){
+    const T=G.town;const waiting=T.res.filter(r=>r.st==='win').length;
+    if(T.res.length>=12||waiting>=2||!closedVisible())return 0;
+    return 1;
+  }
+  if(ph==='plaza'){if(G.baton.on)return 4;return G.plaza.last>=0?(G.plaza.last+1)%4:3;}
+  return -1;
+}
+function hideDemo(){DEMO.t=-1;}
+function updDemo(dt){
+  if(DEMO.t>=0){
+    const t0=DEMO.t;DEMO.t+=dt;
+    if(DEMO.target>=0&&DEMO.target<4){[0.75,1.55].forEach(tp=>{if(t0<tp&&DEMO.t>=tp)FG[DEMO.target].demoT=0;});}
+    if(DEMO.t>2.4)DEMO.t=-1;
+    return;
+  }
+  if(!DEMO.shown&&NOW()-lastInput>4&&G.hint>=0&&(G.phase==='stage'||G.phase==='town'||G.phase==='plaza')){
+    DEMO.shown=true;DEMO.t=0;DEMO.target=G.hint;   // セッション中一度だけ
+  }
+}
+
+/* ---------------- 配置 ---------------- */
+function formPos(name,who){
+  const S=L.S;
+  if(name==='stage'||name==='plaza'){
+    if(who===4)return {x:W/2,y:L.floorY-L.podH,s:S*OSPEC.h,face:0};
+    let x=L.colX[who];
+    if(name==='plaza'){if(who===1)x-=W*0.05;if(who===2)x+=W*0.05;}
+    return {x,y:L.floorY,s:S*PSPEC[who].h,face:who<2?1:-1};
+  }
+  if(name==='march'){
+    const d=L.marchD,sc=L.marchS,front=W*0.87;
+    if(who===4)return {x:front,y:L.floorY,s:S*sc*OSPEC.h,face:1};
+    let k=G.order.indexOf(who);if(k<0)k=who;
+    return {x:front-(k+1)*d,y:L.floorY,s:S*sc*PSPEC[who].h,face:1};
+  }
+  // 'top' 階段の上の高い舞台（笛は外向きの端に立つ）
+  const U=L.U,slot=[1,2,0,3][who],xs=[-0.52,-0.17,0.17,0.52][slot];
+  return {x:W/2+xs*U,y:L.wY-3*L.stepH,s:S*0.42*PSPEC[who].h,face:slot<2?-1:1};
+}
+function charPos(ch,who){
+  const b=formPos(ch.form,who);
+  if(ch.ft>=ch.fdur)return b;
+  const a=formPos(ch.pform,who),t=ease(ch.ft/ch.fdur);
+  const r={x:lerp(a.x,b.x,t),y:lerp(a.y,b.y,t),s:lerp(a.s,b.s,t),face:t<0.5?a.face:b.face};
+  if(ch.form==='top'||ch.pform==='top')r.y-=Math.sin(t*PI)*L.S*0.5;
+  return r;
+}
+function charScale(p,i){return charPos(p,i).s;}
+function playerFace(i,c){
+  const p=P[i];
+  if(p.faceTo>=0&&songT<p.faceUntil){const o=charPos(P[p.faceTo],p.faceTo);const d=o.x-c.x;if(Math.abs(d)>2)return d>0?1:-1;}
+  return c.face;
+}
+function heldPos(i){
+  const p=P[i],c=charPos(p,i),f=playerFace(i,c),s=c.s;
+  const off=[[0.17,-0.52],[0.22,-1.01],[0.44,-0.83],[0.23,-0.52]][i];
+  return {x:c.x+f*off[0]*s,y:c.y+off[1]*s};
+}
+function walkSlot(k,n){const sp=Math.min(L.S*0.34,(W*0.86)/Math.max(1,n));return {x:W*0.93-k*sp,y:L.wY};}
+function plazaSlot(k,n){
+  const U=L.U,zone=1.3*U,margin=Math.max(L.side+6,W*0.035);
+  const side=k%2===0?-1:1,m=Math.floor(k/2),nSide=side<0?Math.ceil(n/2):Math.floor(n/2);
+  const perTier=Math.max(1,Math.ceil(nSide/2)),tier=m<perTier?0:1,col=tier?m-perTier:m;
+  const sideW=Math.max(L.S*0.3,W/2-zone-margin),sp=sideW/perTier;
+  return {x:W/2+side*(zone+(col+0.5)*sp),y:tier?L.wY-L.rs*1.12:L.wY,face:-side,tier};
+}
+function winPos(r){const w=G.town.wins[r.w];return {x:winSX(w)+w.w*L.S/2,y:(L.wY+L.hbY)/2+w.h*L.S*0.5};}
+function resPos(r){
+  const n=walkers().length;
+  if(r.st==='climb'){const a=winPos(r),b=walkSlot(r.k,n),u=clamp(r.t/0.6,0,1),t=easeOut(u);
+    return {x:lerp(a.x,b.x,t),y:lerp(a.y,b.y,t)-Math.sin(u*PI)*L.S*0.35,face:1};}
+  if(r.st==='walk'){const s=walkSlot(r.k,n);return {x:s.x,y:s.y,face:1};}
+  if(r.st==='plaza'){const a=walkSlot(r.k,n),b=plazaSlot(r.k,n),u=clamp(r.t/(BEAT*2),0,1),t=ease(u);
+    return {x:lerp(a.x,b.x,t),y:lerp(a.y,b.y,t)-Math.sin(u*PI)*L.S*0.2,face:t<0.5?1:b.face};}
+  return null;
+}
+function hemY(){return lerp(L.valH-6,H+L.S*0.12,G.cur);}
+
+/* ---------------- 粒（上限つき・背景色か黒だけ） ---------------- */
+function addPt(o){if(PT.length>=PT_MAX)PT.shift();PT.push(o);}
+function sparks(x,y,n,s){for(let k=0;k<n;k++){const a=frnd(0,TAU),v=frnd(0.4,1.1)*s;
+  addPt({k:'spark',x,y,vx:Math.cos(a)*v,vy:Math.sin(a)*v-0.6*s,g:1.1*s,life:0,max:frnd(0.6,1.0),r:frnd(0.04,0.065)*s,rot:frnd(0,TAU)});}}
+function bounceDots(x,y,n,s){for(let k=0;k<n;k++){
+  addPt({k:'dot',x:x+frnd(-0.08,0.08)*s,y,vx:frnd(-0.35,0.35)*s,vy:-frnd(1.5,2.2)*s,g:5.5*s,floor:y,life:0,max:1.05,r:0.03*s,b:0});}}
+function updParticles(dt){
+  for(let k=PT.length-1;k>=0;k--){const p=PT[k];p.life+=dt;if(p.life>=p.max){PT.splice(k,1);continue;}
+    p.vy+=p.g*dt;p.x+=p.vx*dt;p.y+=p.vy*dt;
+    if(p.k==='dot'&&p.y>p.floor&&p.vy>0&&p.b<1){p.y=p.floor;p.vy*=-0.55;p.b++;}   // 跳ね返る影
+    if(p.k==='spark'){p.vx*=0.97;p.rot+=dt*4;}
+  }
+}
+function fgBurst(i){
+  const fx=L.colX[i],fy=L.ledgeY,I=L.I;
+  if(i===1)sparks(fx,fy-I*0.85,6,I*0.9);
+  else if(i===3)bounceDots(fx,fy-I*0.62,3,I*0.9);
+}
+
+/* ---------------- 更新 ---------------- */
+function update(dt){
+  advanceClock(dt);runEvents();scheduleLoop();
+  const T=G.town;
+  P.forEach(p=>{p.hitT+=dt;p.flT+=dt;p.stompT+=dt;p.bowT+=dt;p.nodT+=dt;p.cheerT+=dt;p.antT+=dt;p.wobT+=dt;p.leadT+=dt;p.softT+=dt;
+    if(p.ft<p.fdur)p.ft+=dt;if(p.faceTo>=0&&songT>p.faceUntil)p.faceTo=-1;});
+  C.cueT+=dt;C.strokeT+=dt;C.nodT+=dt;C.wobT+=dt;C.humT+=dt;C.flickT+=dt;C.bowT+=dt;if(C.ft<C.fdur)C.ft+=dt;
+  C.prideV+=(clamp(M.learned/3,0,1)-C.prideV)*Math.min(1,dt*1.5);    // 覚えるほど胸を張る
+  C.offer+=((G.phase==='plaza'&&G.baton.on?1:0)-C.offer)*Math.min(1,dt*4);
+  for(let k=C.icons.length-1;k>=0;k--){C.icons[k].t+=dt;if(C.icons[k].t>1.8)C.icons.splice(k,1);}
+  FG.forEach(f=>{f.hitT+=dt;f.demoT+=dt;});
+  for(let k=FL.length-1;k>=0;k--){const f=FL[k];f.t+=dt;
+    if(f.t>=f.dur){if(!f.back&&P[f.i].joined){P[f.i].held=1;P[f.i].stompT=0;P[f.i].stompA=0.6;}FL.splice(k,1);}}
+  G.shake=Math.max(0,G.shake-dt*2.4);
+  G.stepT+=dt;G.clapT+=dt;G.markT=(G.markT==null?9:G.markT+dt);G.flashT=(G.flashT==null?9:G.flashT+dt);
+  if(G.cur!==G.curTo){const sp=dt/(BEAT*2);G.cur=G.cur<G.curTo?Math.min(G.curTo,G.cur+sp):Math.max(G.curTo,G.cur-sp);}
+  updBG(dt);
+  if((G.phase==='town'||G.phase==='plaza'||G.phase==='finale')&&!BG.op&&!BG.ops.length){
+    const bar=Math.floor(songBeat()/4),every=G.phase==='finale'?1:4;
+    if(bar-BG.lastBar>=every){BG.lastBar=bar;bandNext(G.phase==='finale');}
+  }
+  T.cam+=(T.prog-T.cam)*Math.min(1,dt*5);
+  T.hopT+=dt;
+  T.wins.forEach(w=>{if(w.op)w.t+=dt;});
+  T.res.forEach(r=>{r.t+=dt;r.clapT+=dt;if(r.st==='climb'&&r.t>=0.6){r.st='walk';r.t=0;}});
+  T.garl.forEach(g=>{g.len=Math.min(g.max,g.len+dt*2.2);});
+  const F=G.fin;
+  const gT=(G.phase==='finale'||G.phase==='close')?1:(G.phase==='plaza'?0.45:0);
+  if(F.cur>=0)F.g+=(gT-F.g)*Math.min(1,dt*3);
+  F.pg=Math.max(0,F.pg-dt*2.5);
+  G.baton.t+=dt;
+  G.tokV=(G.tokV==null?1:G.tokV)+(((G.phase==='finale')?0:1)-(G.tokV==null?1:G.tokV))*Math.min(1,dt*3);
+  updParticles(dt);
+  G.hint=computeHint();
+  updDemo(dt);
+}
+
+/* ---------------- 入力（Pointer Events・一本指） ---------------- */
+function batonBox(){const c=charPos(C,4);const gap=Math.max(6,(L.instTop-L.I*0.12)-(L.floorY+L.floorH));
+  return {x0:c.x-L.S*0.32,x1:c.x+L.S*0.66,y0:c.y-L.S*1.1,y1:L.floorY+L.floorH+gap*0.6};}
+function hitTest(x,y){
+  if(G.phase==='plaza'&&G.baton.on){const b=batonBox();if(x>=b.x0&&x<=b.x1&&y>=b.y0&&y<=b.y1)return {t:'baton'};}
+  if(y>=L.instTop-L.I*0.12){for(let i=0;i<4;i++)if(x>=L.colB[i]&&x<L.colB[i+1])return {t:'inst',i};}
+  for(let i=0;i<4;i++){const c=charPos(P[i],i);if(Math.abs(x-c.x)<c.s*0.2&&y>c.y-c.s*1.02&&y<c.y)return {t:'char',i};}
+  const c=charPos(C,4);if(Math.abs(x-c.x)<c.s*0.22&&y>c.y-c.s&&y<c.y+L.podH)return {t:'char',i:4};
+  return {t:'none'};
+}
+const ptrs=new Map();
+function onDown(e){
+  if(e.cancelable)e.preventDefault();
+  audioInit();
+  ptrs.set(e.pointerId,1);if(ptrs.size>8)ptrs.clear();
+  if(!firstTouch){firstTouch=true;scheduleInhDemo();}
+  const h=hitTest(e.clientX,e.clientY);
+  if(h.t==='inst')onTapInstrument(h.i);
+  else if(h.t==='baton')startFinale();
+  else{ // 関係ない場所は小さく揺れるだけ
+    lastInput=NOW();hideDemo();
+    if(h.t==='char'){if(h.i===4)C.wobT=0;else P[h.i].wobT=0;}
+    else G.shake=Math.min(G.shake+0.12,0.25);
+  }
+}
+function onUp(e){ptrs.delete(e.pointerId);audioInit();}
+cv.addEventListener('pointerdown',onDown,{passive:false});
+cv.addEventListener('pointerup',onUp);
+cv.addEventListener('pointercancel',e=>{ptrs.delete(e.pointerId);});
+cv.addEventListener('lostpointercapture',e=>{ptrs.delete(e.pointerId);});
+cv.addEventListener('contextmenu',e=>e.preventDefault());
+document.addEventListener('touchmove',e=>{if(e.cancelable)e.preventDefault();},{passive:false});
+document.addEventListener('touchend',()=>{if(AU.c&&AU.c.state!=='running')AU.c.resume().catch(()=>{});},{passive:true});
+document.addEventListener('gesturestart',e=>e.preventDefault());
+document.addEventListener('dblclick',e=>e.preventDefault());
+
+/* ---------------- 描画：基本 ---------------- */
+function disc(x,y,r){ctx.beginPath();ctx.arc(x,y,r,0,TAU);ctx.fill();}
+function seg(x1,y1,x2,y2,w){ctx.lineWidth=w;ctx.beginPath();ctx.moveTo(x1,y1);ctx.lineTo(x2,y2);ctx.stroke();}
+function ik(sx,sy,hx,hy,l1,l2,bend){
+  let dx=hx-sx,dy=hy-sy,d=Math.hypot(dx,dy)||1e-4;const md=(l1+l2)*0.999;
+  if(d>md){hx=sx+dx/d*md;hy=sy+dy/d*md;d=md;}
+  const a=Math.atan2(dy,dx),cA=clamp((l1*l1+d*d-l2*l2)/(2*l1*d),-1,1),e=a+bend*Math.acos(cA);
+  return [sx+Math.cos(e)*l1,sy+Math.sin(e)*l1,hx,hy];
+}
+function limbH(sx,sy,hx,hy,l1,l2,bend,w,hand){
+  const k=ik(sx,sy,hx,hy,l1,l2,bend);
+  ctx.lineWidth=w;ctx.beginPath();ctx.moveTo(sx,sy);ctx.lineTo(k[0],k[1]);ctx.lineTo(k[2],k[3]);ctx.stroke();
+  if(hand!==false)disc(k[2],k[3],w*0.66);
+  return {x:k[2],y:k[3]};
+}
+function drawBG(){
+  if(BG.mode==='cur'){
+    ctx.fillStyle=CREAM;ctx.fillRect(0,0,W,H);
+    if(BG.poolR>0.001){
+      const g=poolGeom(),k=BG.poolR,sh=G.shake;ctx.fillStyle=BG.poolCol;ctx.beginPath();
+      const N=56;for(let j=0;j<=N;j++){const a=j/N*TAU;const rr=1+sh*0.038*Math.sin(a*7+songT*26)/Math.max(1,k);
+        const x=g.x+Math.cos(a)*g.rx*k*rr,y=g.y+Math.sin(a)*g.ry*k*rr;if(j)ctx.lineTo(x,y);else ctx.moveTo(x,y);}
+      ctx.fill();
+    }
+  }else{
+    ctx.fillStyle=BG.top;ctx.fillRect(0,0,W,H);
+    if(BG.bot!==BG.top){
+      const by=bandY(),sh=G.shake;ctx.fillStyle=BG.bot;ctx.beginPath();ctx.moveTo(0,H+2);
+      const N=24;for(let j=0;j<=N;j++){const x=j/N*W;ctx.lineTo(x,by+sh*L.S*0.035*Math.sin(j*1.3+songT*28));}
+      ctx.lineTo(W,H+2);ctx.closePath();ctx.fill();
+    }
+  }
+}
+function drawValance(){
+  const r=Math.max(6,L.S*0.07),vh=L.valH+(1-G.cur)*L.S*0.14,sh=G.shake;
+  ctx.fillStyle=INK;ctx.fillRect(0,0,W,vh-r*0.6);
+  ctx.beginPath();const n=Math.ceil(W/(r*2))+1;
+  for(let k=0;k<n;k++){const x=k*r*2+r*0.5,y=vh-r*0.6+sh*r*0.6*Math.sin(k*1.7+songT*30);ctx.moveTo(x+r,y);ctx.arc(x,y,r,0,TAU);}
+  ctx.fill();
+}
+function drawCurtainOver(){ // 幕（町を隠す・上がる・閉じる）
+  const hy=hemY();if(hy<=L.valH)return;
+  ctx.save();ctx.beginPath();ctx.rect(0,0,W,Math.min(H,hy));ctx.clip();drawBG();ctx.restore();
+  if(hy<H+4){
+    ctx.fillStyle=INK;const th=Math.max(4,L.S*0.045);ctx.fillRect(0,hy-th,W,th);
+    const r=th*0.9;ctx.beginPath();for(let x=r;x<W;x+=r*3.2){ctx.moveTo(x-r*0.5,hy);ctx.lineTo(x,hy+r*1.6);ctx.lineTo(x+r*0.5,hy);}ctx.fill();
+  }
+}
+function drawLamp(){
+  if(G.cur<0.5)return;
+  const S=L.S,x=W/2+Math.sin(songT*1.3)*1.5+G.shake*Math.sin(songT*21)*S*0.035,y0=L.valH-4,y1=L.valH+S*0.3;
+  ctx.strokeStyle=INK;ctx.fillStyle=INK;
+  seg(W/2,y0,x,y1,Math.max(1.5,S*0.012));
+  const w=S*0.17;ctx.beginPath();ctx.moveTo(x-w*0.35,y1);ctx.lineTo(x+w*0.35,y1);ctx.lineTo(x+w,y1+S*0.13);ctx.lineTo(x-w,y1+S*0.13);ctx.closePath();ctx.fill();
+  disc(x,y1+S*0.15,S*0.045);
+}
+function drawTokens(){ // おじいさんが覚えた合図の札（反復＝同じ形が二つ、掛け合い＝違う形が二つ）
+  G.tokV=(G.tokV==null?1:G.tokV);const tv=G.tokV;if(tv<0.02)return;   // 終演中は幕の中へ引っ込める
+  const cues=M.cues.slice(-4),S=L.S,offs=[-0.5,0.5,-1.5,1.5],sp=Math.min(S*0.75,(W-2*L.side-S*0.45)/3.1);
+  ctx.strokeStyle=INK;ctx.fillStyle=INK;
+  cues.forEach((c,k)=>{
+    const age=c.inh?9:songT-(c.t0||0);
+    const drop=easeBack(clamp(age/0.6,0,1));
+    const x=W/2+offs[k]*sp,yTop=L.valH-4,yB=L.valH+S*(0.06+0.16*drop)-(1-tv)*S*0.6;
+    const sw=Math.sin(songT*1.6+k*1.3)*S*0.015;
+    seg(x,yTop,x+sw,yB,Math.max(1,S*0.01));
+    const s=S*0.17,b=c.k==='rep'?c.a:c.b;
+    drawIcon(c.a,x+sw-S*0.1,yB+s*0.6,s);drawIcon(b,x+sw+S*0.1,yB+s*0.6,s);
+    seg(x+sw-S*0.1,yB,x+sw+S*0.1,yB,Math.max(1,S*0.012));
+  });
+}
+function drawIcon(i,x,y,s){ // 小さな楽器の影
+  ctx.save();ctx.translate(x,y);ctx.scale(s,s);ctx.fillStyle=INK;ctx.strokeStyle=INK;ctx.lineCap='round';
+  if(i===0){ctx.beginPath();ctx.moveTo(-0.42,-0.28);ctx.lineTo(0.42,-0.28);ctx.quadraticCurveTo(0.56,0,0.42,0.3);ctx.lineTo(-0.42,0.3);ctx.quadraticCurveTo(-0.56,0,-0.42,-0.28);ctx.fill();
+    seg(-0.3,-0.36,0.25,-0.62,0.08);seg(0.3,-0.36,-0.25,-0.62,0.08);}
+  else if(i===1){seg(0,0.5,0,-0.1,0.09);[[0,-0.42],[-0.2,-0.24],[0.2,-0.24],[-0.12,-0.06],[0.12,-0.06]].forEach(q=>disc(q[0],q[1],0.12));}
+  else if(i===2){ctx.rotate(-0.3);ctx.fillRect(-0.55,-0.06,1.1,0.12);disc(-0.4,-0.06,0.08);}
+  else{for(let j=0;j<4;j++){const h=0.62-j*0.12;ctx.fillRect(-0.46+j*0.25,-h/2,0.17,h);}ctx.fillRect(-0.5,0.2,1.0,0.07);}
+  ctx.restore();
+}
+
+/* ---------------- 描画：町 ---------------- */
+function shapeSub(cx,cy,w,h,shape,ins){
+  const x0=cx-w/2+ins,x1=cx+w/2-ins,y0=cy-h/2+ins,y1=cy+h/2-ins;if(x1<=x0||y1<=y0)return;
+  if(shape===1){const r=(x1-x0)/2;ctx.moveTo(x0,y1);ctx.lineTo(x0,y0+r);ctx.arc((x0+x1)/2,y0+r,r,PI,0);ctx.lineTo(x1,y1);ctx.closePath();}
+  else if(shape===2){ctx.moveTo(x1,(y0+y1)/2);ctx.ellipse((x0+x1)/2,(y0+y1)/2,(x1-x0)/2,(y1-y0)/2,0,0,TAU);ctx.closePath();}
+  else{ctx.rect(x0,y0,x1-x0,y1-y0);}
+}
+function drawTown(){
+  const T=G.town,S=L.S,cam=camW();
+  const xa=Math.max(0,(-10-cam)*S),xb=Math.min(W,(plazaW()-cam)*S);
+  const cy=(L.wY+L.hbY)/2;
+  if(xb>xa){
+    ctx.fillStyle=INK;ctx.fillRect(xa,L.wY,xb-xa,L.hbY-L.wY);
+    // 塀の上の小さな柵
+    ctx.strokeStyle=INK;const ps=S*0.32;let px0=Math.floor((cam*S)/ps)*ps-cam*S;
+    for(let x=px0;x<xb;x+=ps){if(x>xa)seg(x,L.wY,x,L.wY-S*0.06,Math.max(1.5,S*0.014));}
+    if(xb<W){ctx.fillRect(xb-S*0.08,L.wY-S*0.22,S*0.08,L.hbY-L.wY+S*0.22);}
+    // 窓・家の継ぎ目は切り抜き（背景の光が見える）
+    ctx.save();ctx.beginPath();
+    for(const s of T.slits){const sx=(s-cam)*S;if(sx>xa&&sx<xb-S*0.12)ctx.rect(sx,L.wY+S*0.08,Math.max(1.5,S*0.014),L.hbY-L.wY-S*0.08);}
+    T.wins.forEach(w=>{const sx=winSX(w),ww=w.w*S,wh=w.h*S;if(sx+ww<0||sx>W||!winOK(w))return;const c=sx+ww/2;
+      if(w.op){const o=w.t<0.25?lerp(0.15,1,easeOut(w.t/0.25)):1;shapeSub(c,cy,ww*o,wh,w.shape,0);}
+      else{const ins=Math.max(1.5,S*0.014);shapeSub(c,cy,ww,wh,w.shape,0);shapeSub(c,cy,ww,wh,w.shape,ins);
+        ctx.rect(c-ins/2,cy-wh/2+ins,ins,wh-2*ins);}});
+    ctx.clip('evenodd');drawBG();ctx.restore();
+    // 窓の住人（頭と肩）
+    T.wins.forEach(w=>{if(!w.op||!w.r)return;const r=w.r;if(r.st!=='win')return;
+      const sx=winSX(w),ww=w.w*S,wh=w.h*S;if(sx+ww<0||sx>W)return;const o=w.t<0.25?lerp(0.15,1,easeOut(w.t/0.25)):1;
+      ctx.save();ctx.beginPath();shapeSub(sx+ww/2,cy,ww*o,wh,w.shape,0);ctx.clip();
+      const s=wh*1.75,pop=easeBack(clamp(w.t/0.4,0,1));
+      const hop=(G.clapT<0.2?S*0.012:0)+(T.hopT<0.5?Math.sin(T.hopT/0.5*PI)*wh*0.18:0);
+      drawPerson({x:sx+ww/2,y:cy+wh*0.5+s*0.885-wh*0.62*pop-hop+wh*(1-pop),s,face:r.face,sp:r.look,pose:'clap',clap:G.clapT});
+      ctx.restore();});
+  }
+  // 笛の伸びた影：旗飾り
+  ctx.fillStyle=INK;ctx.strokeStyle=INK;
+  T.garl.forEach(g=>{const sx=(g.x-cam)*S,len=g.len*S;if(sx>W||sx+len<0||len<2)return;
+    const y=L.hbY,sag=S*0.05;ctx.lineWidth=Math.max(1,S*0.01);ctx.beginPath();ctx.moveTo(sx,y);ctx.quadraticCurveTo(sx+len/2,y+sag*2,sx+len,y);ctx.stroke();
+    const n=Math.max(1,Math.floor(len/(S*0.13)));
+    for(let j=0;j<n;j++){const u=(j+0.5)/n,px=sx+len*u,py=y+sag*4*u*(1-u),fw=S*0.035,sw=Math.sin(songT*5+j)*S*0.008;
+      ctx.beginPath();ctx.moveTo(px-fw,py);ctx.lineTo(px+fw,py);ctx.lineTo(px+sw,py+S*0.075);ctx.closePath();ctx.fill();}});
+}
+
+/* ---------------- 描画：広場と終演の造形 ---------------- */
+function plazaX(){return (plazaW()-camW())*L.S;}
+function drawPlaza(){
+  const px=plazaX();if(px>=W)return;
+  const S=L.S,cx=px+W/2;
+  ctx.fillStyle=INK;ctx.strokeStyle=INK;
+  ctx.fillRect(px,L.wY,W,S*0.07);
+  const cw=Math.max(5,W*0.016);ctx.fillRect(px+W*0.008,L.wY,cw,L.hbY-L.wY);ctx.fillRect(px+W*0.992-cw,L.wY,cw,L.hbY-L.wY);
+  // 二段目の見物席（両脇）
+  const n=walkers().length;
+  if(n>2&&G.phase!=='town'){const y=L.wY-L.rs*1.12,zone=1.3*L.U,m=Math.max(L.side+6,W*0.035);
+    ctx.fillRect(px+m*0.6,y,W/2-zone-m*0.6,S*0.035);ctx.fillRect(cx+zone,y,W/2-zone-m*0.6,S*0.035);
+    seg(px+m*0.7,y,px+m*0.7,L.wY,Math.max(2,S*0.02));seg(px+W-m*0.7,y,px+W-m*0.7,L.wY,Math.max(2,S*0.02));}
+  const F=G.fin;
+  drawFinShape(F.prev,F.pg,cx);drawFinShape(F.cur,F.g,cx);
+}
+function drawFinShape(k,g,cx){
+  if(k<0||g<0.01)return;
+  const U=L.U,S=L.S,base=L.wY,t=songT,fin=G.phase==='finale';
+  ctx.fillStyle=INK;ctx.strokeStyle=INK;ctx.lineCap='round';ctx.lineJoin='round';
+  if(k===3){ // 木琴：階段状に伸びる影と高い舞台
+    for(let j=0;j<3;j++){const gj=clamp(g*3-j,0,1);if(gj<=0)continue;
+      const hw=(0.62+(2-j)*0.28)*U,yb=base-j*L.stepH,yt=yb-gj*L.stepH;
+      const bounce=fin?Math.max(0,Math.sin(t*PI*2/BEAT-j*0.7))*U*0.02:0;
+      ctx.fillRect(cx-hw,yt-bounce,hw*2,yb-yt+bounce+1);}
+  }else if(k===2){ // 笛：長い旗が並ぶ
+    const top=L.valH+S*0.34,ph=(base-top)*g;
+    [-0.55,0,0.55].forEach((ox,j)=>{const x=cx+ox*U,yt=base-ph;seg(x,base,x,yt,Math.max(2,U*0.035));disc(x,yt,U*0.04);
+      const dir=ox<0?-1:1,len=(fin?2.3:1.5)*U*g*(j===1?1.15:1),fh=U*0.2;
+      ctx.beginPath();const N=16;
+      for(let q=0;q<=N;q++){const u=q/N,xx=x+dir*len*u,yy=yt+U*0.02+Math.sin(u*5-t*6+j)*U*0.06*u;if(q)ctx.lineTo(xx,yy);else ctx.moveTo(xx,yy);}
+      for(let q=N;q>=0;q--){const u=q/N,xx=x+dir*len*u,yy=yt+U*0.02+fh*(1-u*0.8)+Math.sin(u*5-t*6+j)*U*0.06*u;ctx.lineTo(xx,yy);}
+      ctx.closePath();ctx.fill();});
+  }else if(k===0){ // 太鼓：大太鼓のやぐら
+    const sq=fin?Math.exp(-P[0].hitT*8)*0.18:0,sh=U*0.38*g,dw=0.62*U*g*(1+sq*0.3),dh=0.42*U*g*(1-sq*0.4),cy=base-sh-dh;
+    seg(cx-dw*0.8,base,cx-dw*0.2,base-sh,Math.max(2,U*0.06));seg(cx+dw*0.8,base,cx+dw*0.2,base-sh,Math.max(2,U*0.06));
+    ctx.beginPath();ctx.moveTo(cx-dw,cy-dh);ctx.quadraticCurveTo(cx,cy-dh+sq*U*0.5,cx+dw,cy-dh);
+    ctx.bezierCurveTo(cx+dw*1.2,cy-dh*0.4,cx+dw*1.2,cy+dh*0.4,cx+dw,cy+dh);ctx.lineTo(cx-dw,cy+dh);
+    ctx.bezierCurveTo(cx-dw*1.2,cy+dh*0.4,cx-dw*1.2,cy-dh*0.4,cx-dw,cy-dh);ctx.fill();
+    if(fin&&P[0].hitT<0.4){const e=1-P[0].hitT/0.4;  // 影の花火
+      for(let j=0;j<10;j++){const a=-PI+j/9*PI,r0=dw*1.35,r1=r0+U*0.45*e;
+        ctx.beginPath();ctx.moveTo(cx+Math.cos(a-0.05)*r0,cy+Math.sin(a-0.05)*r0);ctx.lineTo(cx+Math.cos(a)*r1,cy+Math.sin(a)*r1);ctx.lineTo(cx+Math.cos(a+0.05)*r0,cy+Math.sin(a+0.05)*r0);ctx.fill();}}
+  }else{ // 鈴：鈴のアーチ
+    const rx=1.1*U,ry=1.45*U,lw=Math.max(3,U*0.08),cyA=base;
+    ctx.lineWidth=lw;ctx.beginPath();ctx.ellipse(cx,cyA,rx,ry,0,PI,PI+PI/2*g);ctx.stroke();
+    ctx.beginPath();ctx.ellipse(cx,cyA,rx,ry,0,-PI/2*g,0);ctx.stroke();
+    const hit=fin?Math.exp(-P[1].hitT*4):0.2;
+    for(let j=0;j<7;j++){const u=(j+1)/8;if(u>g/2+0.02&&u<1-g/2-0.02)continue;
+      const a=PI+u*PI,ax=cx+Math.cos(a)*rx,ay=cyA+Math.sin(a)*ry;
+      const sw=Math.sin(t*5+j*1.1)*(0.15+hit*0.5),len=U*(0.18+0.06*(j%2)),bx=ax+Math.sin(sw)*len,by=ay+Math.cos(sw)*len;
+      seg(ax,ay,bx,by,Math.max(1,U*0.012));disc(bx,by+U*0.045,U*0.06);}
+  }
+}
+
+/* ---------------- 描画：影絵の人物（内部描画なし・横顔の輪郭） ---------------- */
+function headGeom(o){const hu=o.hunch||0,ch=o.chest||0,r=o.sp.child?0.1:0.085;return {x:0.005+hu*0.05-ch*0.006,y:-0.885+hu*0.05-ch*0.012,r};}
+function drawPerson(o){
+  const sp=o.sp,w=sp.w||1;
+  ctx.save();ctx.translate(o.x,o.y);
+  ctx.scale(o.face*o.s*(1+(o.sx||0)),o.s*(1+(o.sy||0)));
+  if(o.rot)ctx.rotate(o.rot);
+  ctx.fillStyle=INK;ctx.strokeStyle=INK;ctx.lineCap='round';ctx.lineJoin='round';
+  const lw=0.064*w,la=o.legA||0,lb=o.legB||0;
+  let f=limbH(0.025,-0.45,0.045+la*0.07,-la*0.14,0.229,0.229,-1,lw,false);
+  ctx.beginPath();ctx.ellipse(f.x+0.03,f.y-0.012,0.052,0.023,0,0,TAU);ctx.fill();
+  f=limbH(-0.025,-0.45,-0.035+lb*0.07,-lb*0.14,0.229,0.229,-1,lw,false);
+  ctx.beginPath();ctx.ellipse(f.x+0.03,f.y-0.012,0.052,0.023,0,0,TAU);ctx.fill();
+  ctx.save();ctx.translate(0,-0.45);ctx.rotate((o.bow||0)+(o.lean||0));ctx.translate(0,0.45);
+  torsoDraw(o,w);headDraw(o);armsDraw(o,w);
+  ctx.restore();ctx.restore();
+}
+function torsoDraw(o,w){
+  const ch=o.chest||0,hu=o.hunch||0;
+  ctx.beginPath();
+  ctx.moveTo(-0.075*w,-0.45);
+  ctx.quadraticCurveTo(-0.115*w-hu*0.06,-0.63,-0.07*w+hu*0.035,-0.785+hu*0.02);
+  ctx.lineTo(0.055*w+hu*0.035,-0.79+hu*0.02);
+  ctx.quadraticCurveTo(0.105*w+ch*0.06,-0.66+ch*0.02,0.07*w,-0.45);
+  ctx.closePath();ctx.fill();
+  ctx.beginPath();ctx.ellipse(0,-0.46,0.076*w,0.042,0,0,TAU);ctx.fill();
+  if(o.sp.skirt){ctx.beginPath();ctx.moveTo(-0.07*w,-0.53);ctx.lineTo(0.075*w,-0.53);ctx.lineTo(0.14*w,-0.21);ctx.quadraticCurveTo(0,-0.18,-0.14*w,-0.21);ctx.closePath();ctx.fill();}
+}
+function headDraw(o){
+  const hg=headGeom(o),r=hg.r,sp=o.sp;
+  seg((o.hunch||0)*0.035,-0.76,hg.x,hg.y+r*0.6,0.058*(sp.w||1));
+  ctx.save();ctx.translate(hg.x,hg.y);ctx.rotate(o.tilt||0);
+  disc(0,0,r);
+  const nz=sp.child?1.28:1.42;
+  ctx.beginPath();ctx.moveTo(r*0.7,-r*0.28);ctx.lineTo(r*nz,r*0.12);ctx.lineTo(r*0.8,r*0.3);ctx.closePath();ctx.fill();
+  disc(r*0.48,r*0.62,r*0.42);
+  hatDraw(sp.hat,r,o);
+  ctx.restore();
+}
+function hatDraw(h,r,o){
+  ctx.beginPath();
+  switch(h){
+    case 'cap':ctx.moveTo(-r*1.05,-r*0.1);ctx.quadraticCurveTo(-r*0.95,-r*1.35,r*0.25,-r*1.22);ctx.quadraticCurveTo(r*0.95,-r*1.05,r*1.0,-r*0.55);
+      ctx.lineTo(r*1.8,-r*0.44);ctx.lineTo(r*1.72,-r*0.3);ctx.lineTo(r*0.4,-r*0.35);ctx.closePath();ctx.fill();break;
+    case 'bun':ctx.ellipse(-r*0.2,-r*0.25,r*0.95,r*0.9,0,0,TAU);ctx.fill();disc(-r*0.72,-r*0.84,r*0.5);break;
+    case 'pom':ctx.ellipse(-r*0.05,-r*0.45,r*1.08,r*0.75,0,PI,TAU);ctx.closePath();ctx.fill();disc(-r*0.15,-r*1.38,r*0.38);break;
+    case 'tail':{ctx.ellipse(-r*0.15,-r*0.2,r*1.0,r*0.95,0,PI*0.9,PI*2.05);ctx.closePath();ctx.fill();
+      const sw=Math.sin(songT*4+(o.x||0)*0.02)*0.25;
+      ctx.beginPath();ctx.moveTo(-r*0.6,-r*0.85);ctx.quadraticCurveTo(-r*1.9,-r*0.9+sw*r*0.3,-r*2.0,r*0.7+sw*r*0.5);
+      ctx.quadraticCurveTo(-r*1.5,-r*0.2,-r*0.85,-r*0.35);ctx.closePath();ctx.fill();break;}
+    case 'old':ctx.moveTo(r*0.55,-r*0.5);ctx.lineTo(r*1.3,-r*0.62);ctx.lineTo(r*0.75,-r*0.25);ctx.closePath();ctx.fill();
+      disc(-r*0.88,r*0.05,r*0.36);disc(-r*0.6,r*0.42,r*0.3);
+      ctx.beginPath();ctx.moveTo(r*0.95,r*0.32);ctx.quadraticCurveTo(r*1.05,r*1.2,r*0.62,r*2.0+(o.beardSw||0));
+      ctx.quadraticCurveTo(r*0.2,r*1.2,-r*0.3,r*0.75);ctx.lineTo(r*0.4,r*0.3);ctx.closePath();ctx.fill();
+      ctx.beginPath();ctx.ellipse(r*1.02,r*0.36,r*0.34,r*0.15,-0.2,0,TAU);ctx.fill();break;
+    case 'top':ctx.ellipse(r*0.1,-r*0.72,r*1.3,r*0.17,0,0,TAU);ctx.fill();ctx.fillRect(-r*0.72,-r*2.05,r*1.5,r*1.38);break;
+    case 'beret':ctx.ellipse(-r*0.15,-r*0.72,r*1.15,r*0.38,-0.2,0,TAU);ctx.fill();disc(-r*0.05,-r*1.1,r*0.14);break;
+    case 'bob':ctx.ellipse(-r*0.28,-r*0.05,r*1.0,r*1.12,0,0,TAU);ctx.fill();ctx.beginPath();ctx.ellipse(r*0.3,-r*0.75,r*0.6,r*0.3,0.3,0,TAU);ctx.fill();break;
+    case 'braid':ctx.ellipse(-r*0.15,-r*0.2,r*1.0,r*0.95,0,PI*0.9,PI*2.05);ctx.closePath();ctx.fill();
+      [[-0.8,0.5],[-0.92,1.0],[-0.98,1.48]].forEach(q=>disc(q[0]*r,q[1]*r,r*0.27));break;
+    case 'bowler':disc(0,-r*0.62,r*0.82);ctx.beginPath();ctx.ellipse(r*0.1,-r*0.5,r*1.35,r*0.15,0,0,TAU);ctx.fill();break;
+    case 'curly':[[-0.7,-0.7],[-0.1,-1.0],[-1.0,-0.1],[0.45,-0.9]].forEach(q=>disc(q[0]*r,q[1]*r,r*0.42));break;
+    case 'scarf':ctx.ellipse(-r*0.1,-r*0.25,r*1.12,r*1.05,0,PI*0.75,PI*2.08);ctx.closePath();ctx.fill();
+      ctx.beginPath();ctx.moveTo(-r*0.9,r*0.3);ctx.lineTo(-r*1.7,r*0.9);ctx.lineTo(-r*1.2,r*0.95);ctx.closePath();ctx.fill();break;
+    default:ctx.ellipse(-r*0.2,-r*0.3,r*0.95,r*0.85,0,PI*0.95,PI*2.0);ctx.closePath();ctx.fill();
+  }
+}
+function strike(t,k){
+  if(k==='entrance'||k==='final'){return t<0.55?Math.abs(Math.sin(t*22)):0;}
+  if(k==='answer'||k==='pickup'){return t<0.45?Math.abs(Math.sin(t*14)):0;}
+  if(t<0.05)return t/0.05;if(t<0.26)return 1-(t-0.05)/0.21;return 0;
+}
+function drumBody(cx,cy,dw,dh,dent){
+  ctx.beginPath();ctx.moveTo(cx-dw,cy-dh);ctx.quadraticCurveTo(cx,cy-dh+dent*2,cx+dw,cy-dh);
+  ctx.bezierCurveTo(cx+dw*1.2,cy-dh*0.4,cx+dw*1.2,cy+dh*0.4,cx+dw,cy+dh);
+  ctx.quadraticCurveTo(cx,cy+dh*1.08,cx-dw,cy+dh);
+  ctx.bezierCurveTo(cx-dw*1.2,cy+dh*0.4,cx-dw*1.2,cy-dh*0.4,cx-dw,cy-dh);ctx.fill();
+}
+function ribbon(x,y,ang,len,wd,ph){ // 伸びる影
+  if(len<=0.001)return;ctx.beginPath();const N=10,nx=-Math.sin(ang),ny=Math.cos(ang);
+  for(let q=0;q<=N;q++){const u=q/N,wv=Math.sin(u*7-ph)*wd*1.4*u,xx=x+Math.cos(ang)*len*u+nx*wv,yy=y+Math.sin(ang)*len*u+ny*wv,hw=wd*(1-u*0.92);
+    if(q)ctx.lineTo(xx-nx*hw,yy-ny*hw);else ctx.moveTo(xx-nx*hw,yy-ny*hw);}
+  for(let q=N;q>=0;q--){const u=q/N,wv=Math.sin(u*7-ph)*wd*1.4*u,xx=x+Math.cos(ang)*len*u+nx*wv,yy=y+Math.sin(ang)*len*u+ny*wv,hw=wd*(1-u*0.92);
+    ctx.lineTo(xx+nx*hw,yy+ny*hw);}
+  ctx.closePath();ctx.fill();
+}
+function armsDraw(o,w){
+  const hu=o.hunch||0,sx=hu*0.035,sy=-0.755+hu*0.02,aw=0.05*w,l1=0.175,l2=0.165,p=o.p,hg=headGeom(o);
+  switch(o.pose){
+    case 'wait':{const b=Math.sin(songT*3+o.x*0.013)*0.012,rc=o.recv||0;  // 手を空けて待つ
+      limbH(sx,sy,0.1+rc*0.07,-0.53-rc*0.1+b,l1,l2,1,aw);limbH(sx,sy,0.17+rc*0.05,-0.57-rc*0.09-b,l1,l2,1,aw);break;}
+    case 'drum':{
+      const k=strike(p.hitT,p.hitK)+(p.softT<0.2?Math.sin(p.softT/0.2*PI)*0.35:0),ant=p.antT<0.16?(1-p.antT/0.16)*0.06:0,alt=(p.hitG|0)%2;
+      const dx=0.17,dy=-0.5,sq=Math.exp(-p.hitT*12)*0.3,dw=0.085*(1+sq*0.3),dh=0.065*(1-sq*0.4);
+      seg(sx-0.02,sy+0.02,dx-dw*0.5,dy-dh,0.014);
+      drumBody(dx,dy,dw,dh,sq*0.03);
+      const a1=alt?k:k*0.3,a2=alt?k*0.3:k;
+      const h1=limbH(sx,sy,0.12,-0.68+a1*0.1-ant,l1,l2,1,aw),h2=limbH(sx,sy,0.205,-0.665+a2*0.1-ant,l1,l2,1,aw);
+      seg(h1.x,h1.y,h1.x+0.065,h1.y+0.06,0.017);seg(h2.x,h2.y,h2.x+0.06,h2.y+0.065,0.017);break;}
+    case 'bell':{
+      const e=Math.exp(-p.hitT*5),sh=e*Math.sin(p.hitT*45)*0.028+(p.softT<0.3?Math.sin(p.softT*40)*0.01:0),up=p.antT<0.16?0.035:0;
+      const big=(p.hitK==='entrance'||p.hitK==='final')&&p.hitT<0.6?0.04:0;
+      const h=limbH(sx,sy,0.21+sh,-0.9-up-big,l1,l2,1,aw);
+      seg(h.x,h.y+0.015,h.x+sh*0.6,h.y-0.085,0.017);
+      const bx=h.x+sh*0.9,by=h.y-0.105;
+      [[0,-0.034],[-0.031,-0.01],[0.031,-0.01],[-0.019,0.024],[0.019,0.024]].forEach((q,j)=>disc(bx+q[0]+e*Math.sin(p.hitT*50+j)*0.006,by+q[1],0.021));
+      limbH(sx,sy,-0.075,-0.5,l1,l2,1,aw);break;}
+    case 'flute':{
+      const fx0=hg.x+hg.r*1.08,fy0=hg.y+hg.r*0.52,fx1=fx0+0.33,fy1=fy0+0.022;
+      const wig=p.hitT<0.45?Math.sin(p.hitT*38)*0.007:0;
+      limbH(sx,sy,fx0+0.1,fy0+0.012+wig,l1,l2,1,aw);limbH(sx,sy,fx0+0.21,fy0+0.018-wig,l1,l2,1,aw);
+      seg(fx0,fy0,fx1,fy1,0.024);
+      const big=p.hitK==='entrance'||p.hitK==='final';
+      const fl=p.flT<p.flDur?Math.min(1,p.flT/0.18):Math.max(0,1-(p.flT-p.flDur)/0.25);
+      if(fl>0.01)ribbon(fx1,fy1,-0.8,(big?0.85:0.6)*fl,0.014,songT*14);
+      break;}
+    case 'xylo':{
+      const rx0=0.08,rx1=0.38,ry=-0.49;
+      seg(sx-0.02,sy+0.02,rx0+0.02,ry-0.02,0.013);seg(rx0,ry,rx1,ry+0.022,0.02);
+      const k=strike(p.hitT,p.hitK),alt=(p.hitG|0)%2;
+      for(let j=0;j<5;j++){const bxx=rx0+0.035+j*0.062,h=0.085-j*0.011,bo=p.hitT<0.8?-Math.max(0,Math.sin(p.hitT*13-j*0.7))*0.022*Math.exp(-p.hitT*3):0;
+        ctx.fillRect(bxx-0.02,ry+j*0.0045-h*0.65+bo,0.04,h);}
+      const tA=alt?k:k*0.25,tB=alt?k*0.25:k;
+      const hA=limbH(sx,sy,0.15,-0.63+tA*0.05,l1,l2,1,aw),hB=limbH(sx,sy,0.25,-0.62+tB*0.05,l1,l2,1,aw);
+      seg(hA.x,hA.y,hA.x+0.04,hA.y+0.075,0.012);disc(hA.x+0.045,hA.y+0.085,0.017);
+      seg(hB.x,hB.y,hB.x+0.04,hB.y+0.075,0.012);disc(hB.x+0.045,hB.y+0.085,0.017);break;}
+    case 'clap':{const c=o.clap!=null&&o.clap<0.12?0:0.04;
+      limbH(sx,sy,0.12,-0.63,l1,l2,1,aw);limbH(sx,sy,0.14+c,-0.65+c*0.3,l1,l2,1,aw);break;}
+    case 'cond':{
+      const ba=o.ba,bl=o.bl;
+      const h=limbH(sx,sy,sx+Math.cos(ba)*0.31,sy+Math.sin(ba)*0.31,l1,l2,1,aw);
+      const ta=ba-0.12;
+      seg(h.x,h.y,h.x+Math.cos(ta)*bl,h.y+Math.sin(ta)*bl,0.016*(1+o.offer*2.2));
+      disc(h.x,h.y,0.027*(1+o.offer*0.8));if(o.offer>0.5)disc(h.x+Math.cos(ta)*bl,h.y+Math.sin(ta)*bl,0.022*o.offer);
+      limbH(sx,sy,lerp(0.07,-0.1,o.pride),lerp(-0.58,-0.52,o.pride),l1,l2,1,aw);break;}
+  }
+}
+function wallAt(x){if(G.cur>=0.99)return false;return x>(-10-camW())*L.S&&x<plazaX();}
+function drawConductor(){
+  const c=charPos(C,4),S=L.S;
+  if(c.y<L.floorY-1){ctx.fillStyle=INK;ctx.fillRect(c.x-S*0.2,c.y,S*0.4,L.floorY-c.y+1);}  // 指揮台
+  let face=c.face,look=null,down=0;
+  if(!face){
+    let tx=null,ty=null;
+    if(C.cueT<1.1&&C.cueI>=0){const q=charPos(P[C.cueI],C.cueI);tx=q.x;ty=q.y-q.s*0.85;}
+    else if(G.hint>=0&&G.hint<4){tx=L.colX[G.hint];ty=L.ledgeY-L.I*0.6;down=1;}   // 顔の向きで誘う
+    else if(G.hint===4){tx=c.x+S;ty=L.floorY;down=0.6;}
+    if(tx!=null){if(Math.abs(tx-c.x)>4)C.face=tx>c.x?1:-1;look={x:tx,y:ty};}
+    face=C.face;
+  }else C.face=face;
+  const pr=C.prideV,puff=C.nodT<1?Math.sin(C.nodT*PI)*0.6:0,s=c.s,shY=c.y-0.755*s;
+  let ba;
+  if(pr<0.5){const steps=[-1.1,-0.6,-0.95,-0.55];ba=steps[C.beatI]+(C.strokeT<0.1?0.25:0)+Math.sin(songT*17)*0.03*(1-pr*2);}  // ぎこちない
+  else{const ph=((songBeat()%1)+1)%1;ba=-0.95+Math.sin(ph*TAU)*0.22*(0.6+pr*0.4)+Math.exp(-C.strokeT*6)*0.25;}             // なめらか
+  if(look&&C.cueT<1.1){const dx=Math.abs(look.x-c.x),dy=look.y-shY;const aim=Math.min(-0.6,Math.atan2(dy,Math.max(dx,s*0.3)));ba=lerp(ba,aim,0.75*Math.exp(-C.cueT*2.2));}
+  else if(look&&down)ba=lerp(ba,0.95,0.85);
+  ba-=Math.exp(-C.flickT*10)*0.35;
+  ba=lerp(ba,1.12+Math.sin(songBeat()*PI*2)*0.07,C.offer);
+  const tilt=(down&&C.cueT>=1.1?0.32:0)+(C.nodT<0.8?Math.sin(C.nodT/0.8*PI*2)*0.22:0)-pr*0.08;
+  const walk=C.ft<C.fdur?Math.sin(C.ft*11):0;
+  const stp=G.phase==='town'&&G.stepT<0.45?Math.sin(G.stepT/0.45*PI)*0.9:0,alt=G.stepN%2;
+  const hopO=C.offer*Math.abs(Math.sin(songBeat()*PI))*s*0.03;
+  drawPerson({x:c.x,y:c.y-hopO,s,face,sp:OSPEC,pose:'cond',ba,bl:0.24*(1+C.offer*0.4),offer:C.offer,pride:pr,
+    hunch:(1-pr)*0.9,chest:pr+puff*0.5,tilt,bow:C.bowT<1.2?Math.sin(C.bowT/1.2*PI)*0.5:C.offer*0.1,
+    legA:Math.max(0,walk)*0.5+(alt?stp:0),legB:Math.max(0,-walk)*0.5+(alt?0:stp),
+    rot:C.wobT<0.5?Math.sin(C.wobT*25)*0.06*(1-C.wobT/0.5):0,beardSw:Math.sin(songT*3)*0.01});
+  // 覚えた！の小さな楽器の影
+  const n=C.icons.length;
+  C.icons.forEach((ic,k)=>{const u=ic.t/1.8,sz=S*0.2*easeBack(clamp(ic.t/0.3,0,1))*(u>0.8?(1-u)/0.2:1);if(sz<0.5)return;
+    let ix=c.x+(k-(n-1)/2)*S*0.26,iy=c.y-s*1.2-S*0.1-easeOut(clamp(ic.t/0.5,0,1))*S*0.1;
+    if(wallAt(ix)&&iy<L.hbY+S*0.05){ix=c.x+face*(s*0.5+k*S*0.26);iy=c.y-s*0.8;}
+    drawIcon(ic.i,ix,iy,sz);});
+}
+function drawPlayer(i){
+  const p=P[i],c=charPos(p,i),sp=PSPEC[i],n=G.order.length;
+  const face=playerFace(i,c);
+  const pulse=Math.exp(-p.hitT*9);
+  const st=p.stompT<0.32?Math.sin(p.stompT/0.32*PI)*p.stompA:0;
+  const walk=p.ft<p.fdur?Math.sin(p.ft*11+i):0;
+  let la=Math.max(0,walk)*0.6,lb=Math.max(0,-walk)*0.6;
+  if((Math.floor(songBeat()+0.5)+i)%2)la+=st;else lb+=st;
+  if(G.phase==='town'&&G.stepT<0.45){const s2=Math.sin(G.stepT/0.45*PI)*0.9;if((G.stepN+i)%2)la+=s2;else lb+=s2;}
+  const cheer=p.cheerT<0.35?Math.sin(p.cheerT/0.35*PI):0;
+  const recv=FL.some(f=>f.i===i&&!f.back)?1:0;
+  let ax=0,al=0;
+  if(p.faceTo>=0&&songT<p.faceUntil){const q=charPos(P[p.faceTo],p.faceTo),d=q.x-c.x,k=clamp((p.faceUntil-songT)/0.4,0,1);
+    const same=(c.x-W/2)*(q.x-W/2)>0||G.phase==='town';ax=same?sgn(d)*Math.min(L.S*0.14,Math.abs(d)*0.22)*k:0;al=0.08*k;}
+  const gk=1+0.25*(p.hitG|0);
+  drawPerson({x:c.x+ax,y:c.y-cheer*c.s*0.07,s:c.s,face,sp,p,sx:0.035*pulse*gk-0.02*cheer,sy:-0.045*pulse*gk+0.05*cheer,
+    legA:la,legB:lb,lean:al+(p.held>0.5&&n>=2?Math.sin(songBeat()*PI)*0.035*n/4:0)+(p.leadT<0.7?Math.sin(p.leadT/0.7*PI)*0.13:0),
+    bow:p.bowT<1.2?Math.sin(p.bowT/1.2*PI)*0.55:(p.nodT<0.6?Math.sin(p.nodT/0.6*PI)*0.22:0),
+    rot:p.wobT<0.5?Math.sin(p.wobT*25)*0.06*(1-p.wobT/0.5):0,
+    pose:p.held>0.5?['drum','bell','flute','xylo'][i]:'wait',recv});
+}
+function drawResidents(){
+  const T=G.town;
+  T.res.forEach((r,k)=>{if(r.st==='win')return;const q=resPos(r);if(!q)return;
+    const hop=(T.hopT<0.7?Math.max(0,Math.sin(clamp((T.hopT-k*0.04)/0.45,0,1)*PI)):0)*L.S*0.08;
+    const step=(G.phase==='town'&&G.stepT<0.45)?Math.sin(G.stepT/0.45*PI)*0.8:0,alt=(G.stepN+k)%2;
+    drawPerson({x:q.x,y:q.y-hop,s:L.rs*r.look.h,face:q.face,sp:r.look,pose:'clap',clap:G.clapT,legA:alt?step:0,legB:alt?0:step});});
+}
+function drawFlights(){
+  FL.forEach(f=>{const u=easeOut(f.t/f.dur),a={x:L.colX[f.i],y:L.ledgeY-L.I*0.55},b=heldPos(f.i);
+    const from=f.back?b:a,to=f.back?a:b,x=lerp(from.x,to.x,u),y=lerp(from.y,to.y,u)-Math.sin(u*PI)*L.S*0.5;
+    const s0=L.I*0.9,s1=charScale(P[f.i],f.i)*0.2,s=f.back?lerp(s1,s0,u):lerp(s0,s1,u);drawIcon(f.i,x,y,s);});
+}
+function drawParticles(){
+  for(const p of PT){const a=1-p.life/p.max;
+    if(p.k==='spark'){ctx.fillStyle=oppAt(p.x,p.y);const r=p.r*(0.45+0.55*a);
+      ctx.save();ctx.translate(p.x,p.y);ctx.rotate(p.rot);ctx.beginPath();
+      ctx.moveTo(0,-r);ctx.lineTo(r*0.3,-r*0.3);ctx.lineTo(r,0);ctx.lineTo(r*0.3,r*0.3);ctx.lineTo(0,r);ctx.lineTo(-r*0.3,r*0.3);ctx.lineTo(-r,0);ctx.lineTo(-r*0.3,-r*0.3);
+      ctx.closePath();ctx.fill();ctx.restore();}
+    else{ctx.fillStyle=INK;disc(p.x,p.y,p.r*(0.6+0.4*a));}}
+}
+
+/* ---------------- 描画：手前の楽器（操作口） ---------------- */
+function drawFG(i){
+  const I=L.I,f=FG[i],bt=songBeat(),hint=G.hint===i;
+  let hop=0,hsq=0,rot=Math.sin(songT*1.4+i*1.7)*0.012;
+  if(hint){const ph=((bt%1)+1)%1;hop=Math.abs(Math.sin(ph*PI))*I*0.16;hsq=ph<0.1?(1-ph/0.1)*0.14:0;rot=0;}  // 次の1つだけ跳ねる
+  const hk=f.hitT<1.2?Math.exp(-f.hitT*9):0,dk=f.demoT<0.3?Math.sin(f.demoT/0.3*PI)*0.45:0,sq=Math.max(hk,dk,hsq);
+  ctx.save();ctx.translate(L.colX[i],L.ledgeY-hop);ctx.rotate(rot);
+  ctx.fillStyle=INK;ctx.strokeStyle=INK;ctx.lineCap='round';ctx.lineJoin='round';
+  if(i===0){ // 太鼓：打面がへこむ
+    seg(-0.36*I,2,0.2*I,-0.5*I,0.07*I);seg(0.36*I,2,-0.2*I,-0.5*I,0.07*I);
+    const dw=0.42*I*(1+sq*0.13),dh=0.3*I*(1-sq*0.25),cy=-0.74*I+sq*0.08*I;
+    drumBody(0,cy,dw,dh,sq*0.16*I);
+    const sb=hk*0.3*I;
+    seg(-0.3*I,cy-dh-0.05*I-sb,0.38*I,cy-dh-0.24*I-sb*1.4,0.045*I);
+    seg(0.3*I,cy-dh-0.05*I-sb*0.6,-0.36*I,cy-dh-0.22*I-sb,0.045*I);
+  }else if(i===1){ // 鈴：段になった鈴が揺れる
+    ctx.beginPath();ctx.ellipse(0,-0.035*I,0.26*I,0.055*I,0,0,TAU);ctx.fill();
+    ctx.save();ctx.translate(0,-0.06*I);ctx.rotate(hk*Math.sin(f.hitT*28)*0.14+dk*0.08);
+    seg(0,0,0,-0.97*I,0.065*I);
+    [[-0.6,[-0.27,0,0.27]],[-0.78,[-0.17,0.17]],[-0.97,[0]]].forEach((tr,ti)=>{const y=tr[0]*I;
+      if(tr[1].length>1)seg(tr[1][0]*I,y,tr[1][tr[1].length-1]*I,y,0.035*I);
+      tr[1].forEach((bx,j)=>{const jg=f.jig[(ti*2+j)%6]*hk*0.06*I;seg(bx*I,y,bx*I+jg,y+0.05*I,0.02*I);disc(bx*I+jg,y+0.1*I,0.072*I);});});
+    ctx.restore();
+  }else if(i===2){ // 笛：のびる影
+    [-0.3,0.3].forEach(x=>{seg(x*I,0,x*I,-0.3*I,0.05*I);seg(x*I-0.06*I,-0.37*I,x*I,-0.3*I,0.035*I);seg(x*I+0.06*I,-0.37*I,x*I,-0.3*I,0.035*I);});
+    const len=0.5*I*(1+sq*0.22);
+    seg(-len,-0.36*I,len,-0.41*I,0.085*I);
+    ctx.beginPath();ctx.ellipse(-len+0.12*I,-0.4*I,0.07*I,0.045*I,0,0,TAU);ctx.fill();
+    if(f.hitT<0.75){const e=f.hitT<0.15?f.hitT/0.15:Math.max(0,1-(f.hitT-0.15)/0.6);ribbon(len,-0.41*I,-0.35,0.95*I*e,0.045*I,songT*12);}
+  }else{ // 木琴：跳ね返る
+    seg(-0.36*I,2,-0.3*I,-0.42*I,0.05*I);seg(0.36*I,2,0.3*I,-0.38*I,0.05*I);
+    seg(-0.5*I,-0.44*I,0.5*I,-0.37*I,0.055*I);
+    for(let j=0;j<6;j++){const x=-0.42*I+j*0.168*I,h=(0.44-j*0.048)*I,
+      bo=f.hitT<1.2?-Math.max(0,Math.sin(f.hitT*14-j*0.9))*0.13*I*Math.exp(-f.hitT*3):-dk*0.05*I*(j%2);
+      const ry=-0.44*I+j*0.014*I;ctx.fillRect(x-0.06*I,ry-h*0.62+bo,0.12*I,h);}
+  }
+  ctx.restore();
+}
+function bgAt(x,y){if(BG.mode==='cur')return inPool(x,y)?BG.poolCol:CREAM;return y<bandY()?BG.top:BG.bot;}
+function drawDemo(){ // 約4秒触らないと一度だけ：手が今の対象をたたく（矢印・文字なし）
+  if(DEMO.t<0)return;
+  const tg=DEMO.target;let x,y;
+  if(tg===4){const c=charPos(C,4);x=c.x+L.S*0.35;y=L.floorY-L.S*0.08;}
+  else{x=L.colX[tg]+L.I*0.1;y=L.ledgeY-L.I*(tg===1?1.12:tg===0?1.06:0.78);}
+  const t=DEMO.t,a=Math.min(clamp(t/0.4,0,1),clamp((2.4-t)/0.3,0,1));
+  let press=0;[0.75,1.55].forEach(tp=>{const d=t-tp+0.18;if(d>0&&d<0.36)press=Math.max(press,Math.sin(d/0.36*PI));});
+  const s=L.S*0.55,lift=(1-press)*s*0.22+(1-a)*s*1.4,mir=tg===3?-1:1;
+  ctx.save();ctx.translate(x,y);ctx.scale(mir,1);ctx.rotate(0.5);ctx.translate(0,-lift);
+  const path=()=>{ctx.beginPath();ctx.moveTo(-s*0.055,0);ctx.lineTo(-s*0.055,-s*0.36);ctx.lineTo(s*0.055,-s*0.36);ctx.lineTo(s*0.055,0);ctx.closePath();
+    ctx.moveTo(s*0.26,-s*0.47);ctx.ellipse(s*0.09,-s*0.47,s*0.17,s*0.18,0,0,TAU);
+    ctx.moveTo(s*0.24,-s*0.31);ctx.arc(s*0.18,-s*0.31,s*0.062,0,TAU);
+    ctx.moveTo(s*0.305,-s*0.36);ctx.arc(s*0.25,-s*0.36,s*0.055,0,TAU);
+    ctx.moveTo(s*0.02,-s*0.6);ctx.lineTo(s*0.12,-s*1.0);ctx.lineTo(s*0.3,-s*0.96);ctx.lineTo(s*0.2,-s*0.56);ctx.closePath();};
+  ctx.lineJoin='round';ctx.lineWidth=s*0.07;ctx.strokeStyle=bgAt(x,y-s*0.4);path();ctx.stroke();
+  ctx.fillStyle=INK;path();ctx.fill();disc(0,0,s*0.055);
+  ctx.restore();
+}
+function render(){
+  ctx.setTransform(DPR,0,0,DPR,0,0);
+  drawBG();
+  if(hemY()<H){drawTown();drawPlaza();drawResidents();drawCurtainOver();}
+  drawLamp();drawTokens();
+  ctx.fillStyle=INK;ctx.fillRect(0,L.floorY,W,L.floorH);
+  drawConductor();
+  for(let i=0;i<4;i++)drawPlayer(i);
+  drawFlights();drawParticles();
+  drawValance();
+  ctx.fillStyle=INK;ctx.fillRect(0,L.ledgeY,W,H-L.ledgeY);
+  for(let i=0;i<4;i++)drawFG(i);
+  drawDemo();
+}
+
+/* ---------------- main loop ---------------- */
+let last=0,raf=0,perfN=0,perfSlow=0;
+function frame(ts){
+  raf=requestAnimationFrame(frame);
+  const now=ts/1000;let dt=last?now-last:1/60;last=now;
+  // 重い端末では解像度倍率だけを段階的に下げる（操作や見た目の法則は変えない）
+  if(dt>0&&dt<0.1){perfN++;if(dt>0.0205)perfSlow++;if(perfN>=150){if(perfSlow>100&&DPRCAP>1&&DPR>1){DPRCAP=Math.max(1,DPR-0.5);resize();}perfN=0;perfSlow=0;}}
+  dt=clamp(dt,0,1/20)*TS;
+  const n=Math.max(1,Math.ceil(dt/(1/60)-0.01));for(let k=0;k<n;k++)update(dt/n);
+  render();
+}
+document.addEventListener('visibilitychange',()=>{  // 非表示中は止める
+  if(document.hidden){if(raf)cancelAnimationFrame(raf);raf=0;last=0;if(AU.c)AU.c.suspend().catch(()=>{});}
+  else{last=0;if(!raf)raf=requestAnimationFrame(frame);if(AU.c&&AU.c.state!=='running')AU.c.resume().catch(()=>{});}
+});
+window.addEventListener('resize',resize);
+if(window.visualViewport)window.visualViewport.addEventListener('resize',resize);
+window.addEventListener('orientationchange',()=>setTimeout(resize,150));
+resize();
+STORE.data=loadMem();
+newCycle();
+raf=requestAnimationFrame(frame);
+
+/* ---- test hooks (no visible UI) ---- */
+window.__gf={
+  state:()=>({phase:G.phase,cycle:G.cycle,order:G.order.slice(),joined:P.map(p=>p.joined),held:P.map(p=>p.held),
+    rep:M.rep.slice(),duo:M.duo?M.duo.slice():null,cues:M.cues.map(c=>c.k+':'+c.a+(c.k==='duo'?','+c.b:'')+(c.inh?'*':'')),
+    learned:M.learned,pride:+C.prideV.toFixed(2),hint:G.hint,inhOpen:M.inhOpen,
+    town:{prog:G.town.prog,cam:+G.town.cam.toFixed(2),res:G.town.res.length,walk:walkers().length,win:G.town.res.filter(r=>r.st==='win').length,arrived:G.town.arrived,garl:G.town.garl.length},
+    plaza:{taps:G.plaza.taps,last:G.plaza.last},fin:{cur:G.fin.cur,shape:G.fin.shape,g:+G.fin.g.toFixed(2)},baton:G.baton.on,
+    bg:{mode:BG.mode,top:BG.top,bot:BG.bot,pool:BG.poolCol,poolR:+BG.poolR.toFixed(2),busy:BG.ops.length+(BG.op?1:0)},cur:+G.cur.toFixed(2),
+    arr:G.arr?G.arr.k+':'+G.arr.a+(G.arr.b!=null?','+G.arr.b:''):null,
+    parts:PT.length,demo:{t:+DEMO.t.toFixed(2),shown:DEMO.shown,target:DEMO.target},audio:AU.c?AU.c.state:'none',
+    store:{status:STORE.status,saved:STORE.saved,saveFail:STORE.saveFail,data:STORE.data},
+    fg:FG.map(f=>+f.hitT.toFixed(3)),hitT:P.map(p=>+p.hitT.toFixed(3)),hitK:P.map(p=>p.hitK),stompT:P.map(p=>+p.stompT.toFixed(3)),
+    face:P.map((p,i)=>playerFace(i,charPos(p,i))),beat:+songBeat().toFixed(2),forms:P.map(p=>p.form).concat([C.form]),dpr:DPR,repAgo:P.map(p=>+(songT-p.repT).toFixed(1))}),
+  instXY:i=>({x:L.colX[i],y:L.ledgeY-L.I*0.5}),
+  batonXY:()=>{const b=batonBox();return {x:(b.x0+b.x1)/2,y:(b.y0+b.y1)/2};},
+  charXY:i=>{const c=i===4?charPos(C,4):charPos(P[i],i);return {x:c.x,y:c.y-c.s*0.5,s:c.s};},
+  L:()=>Object.assign({},L),
+  step:sec=>{NOSYNC=true;const n=Math.round(sec*60);for(let k=0;k<n;k++)update(1/60);NOSYNC=false;if(AU.c)AU.off=AU.c.currentTime-songT;render();return songBeat();},
+  timeFrames:n=>{const t0=performance.now();for(let k=0;k<n;k++){update(1/60);render();}return (performance.now()-t0)/n;}
+};
+})();
+</script>
+</body>
+</html>
